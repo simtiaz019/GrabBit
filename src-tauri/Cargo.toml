@@ -1,0 +1,28 @@
+[package]
+name = "grabbit-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "grabbit_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+download-common = { path = "../crates/download-common" }
+download-core = { path = "../crates/download-core" }
+serde.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
+
