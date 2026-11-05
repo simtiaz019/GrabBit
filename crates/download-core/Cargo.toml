@@ -20,6 +20,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 axum = "0.8.8"
+futures-util.workspace = true
 tempfile = "3.24.0"
 
 [lints]

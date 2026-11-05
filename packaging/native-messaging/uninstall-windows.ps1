@@ -3,6 +3,7 @@ $RegistryPaths = @(
   'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.grabbit.native',
   'HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.grabbit.native',
   'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.grabbit.native',
+  'HKCU:\Software\Chromium\NativeMessagingHosts\com.grabbit.native',
   'HKCU:\Software\Mozilla\NativeMessagingHosts\com.grabbit.native'
 )
 foreach ($RegistryPath in $RegistryPaths) {

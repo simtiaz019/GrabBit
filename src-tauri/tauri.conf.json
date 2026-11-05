@@ -40,6 +40,16 @@
     ],
     "macOS": {
       "signingIdentity": "-"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "GrabBit",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "../packaging/windows/installer-hooks.nsh"
+      }
     }
   }
 }

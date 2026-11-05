@@ -10,6 +10,7 @@ import type {
   MediaInspection,
   MediaOutput,
   BrowserDiagnostics,
+  BrowserSetupReport,
 } from './types';
 
 export const checkBackend = (): Promise<HealthResponse> => invoke('health_check');
@@ -45,6 +46,12 @@ export const createMediaDownload = (request: {
 
 export const getBrowserDiagnostics = (): Promise<BrowserDiagnostics> =>
   invoke('get_browser_diagnostics');
+export const getBrowserSetup = (): Promise<BrowserSetupReport> => invoke('get_browser_setup');
+export const repairBrowserIntegration = (browserIds: string[]): Promise<BrowserSetupReport> =>
+  invoke('repair_browser_integration', { browserIds });
+export const removeBrowserIntegration = (): Promise<void> => invoke('remove_browser_integration');
+export const getOnboardingComplete = (): Promise<boolean> => invoke('get_onboarding_complete');
+export const setOnboardingComplete = (complete: boolean): Promise<void> => invoke('set_onboarding_complete', { complete });
 
 export async function chooseDownloadDirectory(): Promise<string | null> {
   const selected = await open({ directory: true, multiple: false, title: 'Choose download folder' });

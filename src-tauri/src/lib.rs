@@ -1,12 +1,14 @@
+mod browser_integration;
 mod browser_ipc;
 mod commands;
 
 use download_common::BrowserCaptureMode;
 use download_core::DownloadService;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[allow(clippy::too_many_lines)]
 /// Starts the native `GrabBit` application event loop.
 ///
 /// # Panics
@@ -55,6 +57,21 @@ pub fn run() {
                 settings.default_download_directory =
                     download_directory.to_string_lossy().into_owned();
             }
+            if settings.yt_dlp_path.trim().is_empty()
+                && let Some(path) = discover_tool("yt-dlp")
+            {
+                settings.yt_dlp_path = path.to_string_lossy().into_owned();
+            }
+            if settings.ffmpeg_path.trim().is_empty()
+                && let Some(path) = discover_tool("ffmpeg")
+            {
+                settings.ffmpeg_path = path.to_string_lossy().into_owned();
+            }
+            if settings.ffprobe_path.trim().is_empty()
+                && let Some(path) = discover_tool("ffprobe")
+            {
+                settings.ffprobe_path = path.to_string_lossy().into_owned();
+            }
             if std::env::var_os("GRABBIT_ENABLE_AUTOMATIC_CAPTURE").as_deref()
                 == Some(std::ffi::OsStr::new("1"))
             {
@@ -90,6 +107,11 @@ pub fn run() {
             commands::media_capabilities,
             commands::create_media_download,
             commands::get_browser_diagnostics,
+            commands::get_browser_setup,
+            commands::repair_browser_integration,
+            commands::remove_browser_integration,
+            commands::get_onboarding_complete,
+            commands::set_onboarding_complete,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build GrabBit desktop application")
@@ -102,6 +124,30 @@ pub fn run() {
                 tauri::async_runtime::block_on(service.shutdown());
             }
         });
+}
+
+fn discover_tool(name: &str) -> Option<std::path::PathBuf> {
+    let executable = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    let path_candidate = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|directory| directory.join(&executable))
+            .find(|candidate| candidate.is_file())
+    });
+    if path_candidate.is_some() {
+        return path_candidate;
+    }
+    #[cfg(target_os = "macos")]
+    for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        let candidate = std::path::Path::new(directory).join(&executable);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn sync_browser_extensions(resources: &Path, destination: &Path) -> std::io::Result<()> {
@@ -128,9 +174,12 @@ fn sync_browser_native_host(resources: &Path) -> std::io::Result<()> {
         return Ok(());
     }
 
-    let install_directory = native_host_install_directory()?;
-    std::fs::create_dir_all(&install_directory)?;
-    let destination = install_directory.join(executable);
+    let destination =
+        browser_integration::native_host_install_path().map_err(std::io::Error::other)?;
+    let install_directory = destination.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid native host path")
+    })?;
+    std::fs::create_dir_all(install_directory)?;
     std::fs::copy(source, &destination)?;
     #[cfg(unix)]
     {
@@ -138,38 +187,6 @@ fn sync_browser_native_host(resources: &Path) -> std::io::Result<()> {
         std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn native_host_install_directory() -> std::io::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| std::io::Error::other("home directory is unavailable"))?;
-    Ok(home.join("Library/Application Support/GrabBit"))
-}
-
-#[cfg(target_os = "linux")]
-fn native_host_install_directory() -> std::io::Result<PathBuf> {
-    let data_directory = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .ok_or_else(|| std::io::Error::other("user data directory is unavailable"))?;
-    Ok(data_directory.join("grabbit"))
-}
-
-#[cfg(target_os = "windows")]
-fn native_host_install_directory() -> std::io::Result<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|directory| directory.join("GrabBit"))
-        .ok_or_else(|| std::io::Error::other("local application data directory is unavailable"))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn native_host_install_directory() -> std::io::Result<PathBuf> {
-    Err(std::io::Error::other(
-        "browser native host is unsupported on this platform",
-    ))
 }
 
 fn copy_extension_directory(source: &Path, destination: &Path) -> std::io::Result<()> {

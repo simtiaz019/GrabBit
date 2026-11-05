@@ -8,11 +8,11 @@ import {
 } from 'lucide-react';
 import {
   addDownload, cancelDownload, checkBackend, chooseDownloadDirectory, createMediaDownload, getBrowserDiagnostics, getSettings,
-  inspectMedia,
+  getBrowserSetup, getOnboardingComplete, inspectMedia, removeBrowserIntegration, repairBrowserIntegration,
   listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload,
-  retryDownload, saveSettings,
+  retryDownload, saveSettings, setOnboardingComplete,
 } from './bridge';
-import type { AppSettings, BrowserDiagnostics, DownloadJob, DownloadState, MediaInspection, MediaOutput, RemoteMetadata } from './types';
+import type { AppSettings, BrowserDiagnostics, BrowserSetupReport, DownloadJob, DownloadState, MediaInspection, MediaOutput, RemoteMetadata } from './types';
 
 type View = 'downloads' | 'active' | 'queued' | 'completed' | 'failed' | 'activity' | 'documents' | 'videos' | 'audio' | 'software' | 'archives' | 'others' | 'settings' | 'about';
 type Action = 'pause' | 'resume' | 'retry' | 'cancel' | 'remove' | 'copy';
@@ -37,12 +37,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [context, setContext] = useState<{ id: string; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const refresh = useCallback(async () => setJobs(await listDownloads()), []);
 
   useEffect(() => {
     void Promise.all([checkBackend(), listDownloads(), getSettings()]).then(([health, downloads, stored]) => {
-      setBackend(`${health.appName} v${health.version}`); setJobs(downloads); setSettings(stored);
+      setBackend(`${health.appName} v${health.version}`); setJobs(downloads); setSettings(stored); setSettingsLoaded(true);
     }).catch((reason: unknown) => setError(message(reason))).finally(() => setLoading(false));
     let dispose: (() => void) | undefined;
     void onProgress((progress) => {
@@ -51,6 +53,10 @@ export default function App() {
     }).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
   }, [refresh]);
+
+  useEffect(() => {
+    void getOnboardingComplete().then((complete) => setShowOnboarding(!complete)).catch(() => setShowOnboarding(true));
+  }, []);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
@@ -94,13 +100,14 @@ export default function App() {
       <div className="content-frame"><main className="main-content">
         {isListView(view) && <><Summary active={active.length} queued={jobs.filter((job) => job.state === 'queued').length} speed={speed} total={jobs.length} /><div className="download-toolbar"><div><SlidersHorizontal size={15} /><span>{visible.length} downloads</span>{selected.size > 0 && <b>{selected.size} selected</b>}</div><button className="secondary compact" onClick={() => void refresh()} type="button"><RefreshCw size={15} /> Refresh</button></div>{loading ? <LoadingState /> : <DownloadTable jobs={visible} onAction={action} onContext={(event, job) => { event.preventDefault(); event.stopPropagation(); setContext({ id: job.id, x: event.clientX, y: event.clientY }); }} onDetails={(job) => setDetailsId(job.id)} onSelect={(id, checked) => setSelected((current) => { const next = new Set(current); if (checked) next.add(id); else next.delete(id); return next; })} onSelectAll={(checked) => setSelected(checked ? new Set(visible.map((job) => job.id)) : new Set())} onSort={setSortKey} selected={selected} sort={sort} />}</>}
         {view === 'activity' && <ActivityView jobs={jobs} />}
-        {view === 'settings' && <SettingsView settings={settings} onChange={setSettings} onSave={() => act(() => saveSettings(settings))} />}
+        {view === 'settings' && <SettingsView onOpenSetup={() => setShowOnboarding(true)} settings={settings} onChange={setSettings} onSave={() => act(() => saveSettings(settings))} />}
         {view === 'about' && <About backend={backend} />}
       </main>{details && <Details job={details} onAction={action} onClose={() => setDetailsId(null)} />}</div>
       <footer className="status-bar"><div><i /> Engine ready <small>{backend}</small></div><div><span>{active.length} active</span><span className="numeric">{formatBytes(speed)}/s</span></div></footer>
     </div>
     {showAdd && <NewDownload settings={settings} onClose={() => setShowAdd(false)} onCreated={(job) => { setJobs((current) => [job, ...current]); setShowAdd(false); setView('downloads'); }} onError={setError} />}
     {showMedia && <MediaDownloadDialog initialUrl={mediaUrl} settings={settings} onClose={() => setShowMedia(false)} onCreated={(job) => { setJobs((current) => [job, ...current]); setShowMedia(false); setView('downloads'); }} onError={setError} />}
+    {showOnboarding && settingsLoaded && <OnboardingWizard settings={settings} onChangeSettings={setSettings} onClose={() => setShowOnboarding(false)} onError={setError} />}
     {context && <ContextMenu job={jobs.find((job) => job.id === context.id) ?? null} onAction={(job, name) => { setContext(null); action(job, name); }} x={context.x} y={context.y} />}
   </div>;
 }
@@ -159,9 +166,133 @@ function mediaFormatLabel(format: MediaInspection['formats'][number]) { const re
 
 function ActivityView({ jobs }: { jobs: DownloadJob[] }) { const active = jobs.filter((job) => job.state === 'downloading'); const completed = jobs.filter((job) => job.state === 'completed').sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8); const speed = active.reduce((sum, job) => sum + job.speedBytesPerSecond, 0); return <div className="page-stack"><Summary active={active.length} queued={jobs.filter((job) => job.state === 'queued').length} speed={speed} total={jobs.length} /><section className="surface-section"><div className="section-heading"><div><h2>Transfer activity</h2><p>Live information reported by the download engine.</p></div><Status state={active.length ? 'downloading' : 'paused'} /></div><div className="activity-meter"><Gauge size={22} /><div><span>Aggregate download speed</span><strong>{formatBytes(speed)}/s</strong></div></div></section><section className="surface-section"><div className="section-heading"><div><h2>Recent completions</h2><p>Latest successfully finished downloads.</p></div></div>{completed.length ? <div className="recent-list">{completed.map((job) => <div key={job.id}><span className="file-icon"><Check size={16} /></span><span><strong>{job.fileName}</strong><small>{job.totalBytes ? formatBytes(job.totalBytes) : 'Unknown size'}</small></span><time>{relativeTime(job.updatedAt)}</time></div>)}</div> : <p className="muted-message">No completed downloads yet.</p>}</section></div>; }
 
-function SettingsView({ settings, onChange, onSave }: { settings: AppSettings; onChange: (settings: AppSettings) => void; onSave: () => void }) { return <div className="settings-layout"><aside><a href="#general">General</a><a href="#downloads">Downloads</a><a href="#browser">Browser integration</a><a href="#media-tools">Media tools</a><a href="#appearance">Appearance</a></aside><div className="settings-content"><SettingsSection description="Default behavior for new downloads." id="general" title="General"><label>Default download directory<div className="field-with-action"><Folder size={17} /><input onChange={(event) => onChange({ ...settings, defaultDownloadDirectory: event.target.value })} value={settings.defaultDownloadDirectory} /><button className="secondary compact" onClick={() => void chooseDownloadDirectory().then((value) => value && onChange({ ...settings, defaultDownloadDirectory: value }))} type="button">Browse</button></div></label></SettingsSection><SettingsSection description="Connection defaults. Concurrency changes take effect after restart." id="downloads" title="Downloads"><div className="settings-grid"><label>Maximum concurrent downloads<input max="32" min="1" onChange={(event) => onChange({ ...settings, maxConcurrentDownloads: Number(event.target.value) })} type="number" value={settings.maxConcurrentDownloads} /></label><label>Connections per download<input max="32" min="1" onChange={(event) => onChange({ ...settings, defaultSegments: Number(event.target.value) })} type="number" value={settings.defaultSegments} /></label></div></SettingsSection><SettingsSection description="Control browser capture centrally. The extension always reads and saves this policy through GrabBit." id="browser" title="Browser integration"><label>Capture mode<select onChange={(event) => { const value = event.target.value; if (value === 'off' || value === 'ask' || value === 'automatic') onChange({ ...settings, browserCaptureMode: value }); }} value={settings.browserCaptureMode}><option value="off">Off</option><option value="ask">Ask every time</option><option value="automatic">Automatic (IDM-style)</option></select></label><label>Excluded sites <span>(one hostname per line)</span><textarea onChange={(event) => onChange({ ...settings, browserExcludedSites: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) })} rows={4} value={settings.browserExcludedSites.join('\n')} /></label><BrowserDiagnosticsPanel /></SettingsSection><SettingsSection description="Use absolute paths to trusted, separately installed executables. GrabBit never downloads or updates these tools silently." id="media-tools" title="Media tools"><div className="tool-paths"><label>yt-dlp<input onChange={(event) => onChange({ ...settings, ytDlpPath: event.target.value })} placeholder="/opt/homebrew/bin/yt-dlp" value={settings.ytDlpPath} /></label><label>FFmpeg<input onChange={(event) => onChange({ ...settings, ffmpegPath: event.target.value })} placeholder="/opt/homebrew/bin/ffmpeg" value={settings.ffmpegPath} /></label><label>FFprobe<input onChange={(event) => onChange({ ...settings, ffprobePath: event.target.value })} placeholder="/opt/homebrew/bin/ffprobe" value={settings.ffprobePath} /></label></div></SettingsSection><SettingsSection description="Choose how GrabBit follows your desktop appearance." id="appearance" title="Appearance"><div className="theme-options">{(['system', 'light', 'dark'] as const).map((theme) => <button className={settings.theme === theme ? 'selected' : ''} key={theme} onClick={() => onChange({ ...settings, theme })} type="button"><span className={`theme-preview ${theme}`} /><strong>{theme === 'system' ? 'Follow system' : capitalize(theme)}</strong>{settings.theme === theme && <Check size={16} />}</button>)}</div></SettingsSection><div className="settings-save"><button className="primary" onClick={onSave} type="button">Save settings</button></div></div></div>; }
+function SettingsView({ settings, onChange, onSave, onOpenSetup }: { settings: AppSettings; onChange: (settings: AppSettings) => void; onSave: () => void; onOpenSetup: () => void }) { return <div className="settings-layout"><aside><a href="#general">General</a><a href="#downloads">Downloads</a><a href="#browser">Browser integration</a><a href="#media-tools">Media tools</a><a href="#appearance">Appearance</a></aside><div className="settings-content"><SettingsSection description="Default behavior for new downloads." id="general" title="General"><label>Default download directory<div className="field-with-action"><Folder size={17} /><input onChange={(event) => onChange({ ...settings, defaultDownloadDirectory: event.target.value })} value={settings.defaultDownloadDirectory} /><button className="secondary compact" onClick={() => void chooseDownloadDirectory().then((value) => value && onChange({ ...settings, defaultDownloadDirectory: value }))} type="button">Browse</button></div></label></SettingsSection><SettingsSection description="Connection defaults. Concurrency changes take effect after restart." id="downloads" title="Downloads"><div className="settings-grid"><label>Maximum concurrent downloads<input max="32" min="1" onChange={(event) => onChange({ ...settings, maxConcurrentDownloads: Number(event.target.value) })} type="number" value={settings.maxConcurrentDownloads} /></label><label>Connections per download<input max="32" min="1" onChange={(event) => onChange({ ...settings, defaultSegments: Number(event.target.value) })} type="number" value={settings.defaultSegments} /></label></div></SettingsSection><SettingsSection description="Control browser capture centrally. The extension always reads and saves this policy through GrabBit." id="browser" title="Browser integration"><label>Capture mode<select onChange={(event) => { const value = event.target.value; if (value === 'off' || value === 'ask' || value === 'automatic') onChange({ ...settings, browserCaptureMode: value }); }} value={settings.browserCaptureMode}><option value="off">Off</option><option value="ask">Ask every time</option><option value="automatic">Automatic (IDM-style)</option></select></label><label>Excluded sites <span>(one hostname per line)</span><textarea onChange={(event) => onChange({ ...settings, browserExcludedSites: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) })} rows={4} value={settings.browserExcludedSites.join('\n')} /></label><button className="secondary compact" onClick={onOpenSetup} type="button">Open browser setup wizard</button><BrowserDiagnosticsPanel /></SettingsSection><SettingsSection description="Use absolute paths to trusted, separately installed executables. GrabBit never downloads or updates these tools silently." id="media-tools" title="Media tools"><div className="tool-paths"><label>yt-dlp<input onChange={(event) => onChange({ ...settings, ytDlpPath: event.target.value })} placeholder="/opt/homebrew/bin/yt-dlp" value={settings.ytDlpPath} /></label><label>FFmpeg<input onChange={(event) => onChange({ ...settings, ffmpegPath: event.target.value })} placeholder="/opt/homebrew/bin/ffmpeg" value={settings.ffmpegPath} /></label><label>FFprobe<input onChange={(event) => onChange({ ...settings, ffprobePath: event.target.value })} placeholder="/opt/homebrew/bin/ffprobe" value={settings.ffprobePath} /></label></div></SettingsSection><SettingsSection description="Choose how GrabBit follows your desktop appearance." id="appearance" title="Appearance"><div className="theme-options">{(['system', 'light', 'dark'] as const).map((theme) => <button className={settings.theme === theme ? 'selected' : ''} key={theme} onClick={() => onChange({ ...settings, theme })} type="button"><span className={`theme-preview ${theme}`} /><strong>{theme === 'system' ? 'Follow system' : capitalize(theme)}</strong>{settings.theme === theme && <Check size={16} />}</button>)}</div></SettingsSection><div className="settings-save"><button className="primary" onClick={onSave} type="button">Save settings</button></div></div></div>; }
 
-function BrowserDiagnosticsPanel() { const [diagnostics, setDiagnostics] = useState<BrowserDiagnostics | null>(null); const [diagnosticError, setDiagnosticError] = useState<string | null>(null); const refresh = useCallback(() => { setDiagnosticError(null); void getBrowserDiagnostics().then(setDiagnostics).catch((reason: unknown) => setDiagnosticError(message(reason))); }, []); useEffect(refresh, [refresh]); return <div className="browser-diagnostics"><div><strong>Native host</strong><span>{diagnostics?.nativeHostRegistered ? 'Registered' : 'Not registered'}</span></div><div><strong>Private IPC</strong><span>{diagnostics?.ipcAvailable ? 'Available' : 'Unavailable'}</span></div><div><strong>Extension connected</strong><span>{diagnostics?.extensionConnected ? 'Yes' : 'No'}</span></div><div><strong>Automatic interception</strong><span>{diagnostics?.automaticInterceptionEnabled === null ? 'Unknown' : diagnostics?.automaticInterceptionEnabled ? 'Enabled' : 'Disabled'}</span></div><div><strong>Downloads permission</strong><span>{diagnostics?.downloadsPermissionGranted === null ? 'Unknown' : diagnostics?.downloadsPermissionGranted ? 'Granted' : 'Denied'}</span></div><div><strong>Last download event</strong><span>{diagnostics?.lastDownloadEventAt ? new Date(diagnostics.lastDownloadEventAt).toLocaleString() : 'None'}</span></div><div><strong>Last URL hostname</strong><span>{diagnostics?.lastUrlHostname ?? 'None'}</span></div><div><strong>Capture decision</strong><span>{diagnostics?.captureDecision ?? 'None'}</span></div><div><strong>GrabBit acceptance</strong><span>{diagnostics?.jobAcceptanceStatus ?? 'None'}</span></div><div><strong>Chrome cancellation</strong><span>{diagnostics?.chromeCancellationResult ?? 'None'}</span></div><button className="secondary compact" onClick={refresh} type="button">Run diagnostics</button>{diagnostics?.manifestLocations.map((location) => <code key={location}>{location}</code>)}{(diagnosticError ?? diagnostics?.lastError) && <p className="inline-error">{diagnosticError ?? diagnostics?.lastError}</p>}</div>; }
+function BrowserDiagnosticsPanel() {
+  const [diagnostics, setDiagnostics] = useState<BrowserDiagnostics | null>(null);
+  const [setup, setSetup] = useState<BrowserSetupReport | null>(null);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const refresh = useCallback(() => {
+    setDiagnosticError(null);
+    void Promise.all([getBrowserDiagnostics(), getBrowserSetup()])
+      .then(([nextDiagnostics, nextSetup]) => { setDiagnostics(nextDiagnostics); setSetup(nextSetup); })
+      .catch((reason: unknown) => setDiagnosticError(message(reason)));
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  async function repair() {
+    const browserIds = setup?.browsers.filter((browser) => browser.detected && browser.id !== 'safari').map((browser) => browser.id) ?? [];
+    if (!browserIds.length) { setDiagnosticError('No detected browser is available to configure.'); return; }
+    setDiagnosticError(null);
+    try { setSetup(await repairBrowserIntegration(browserIds)); refresh(); }
+    catch (reason) { setDiagnosticError(message(reason)); }
+  }
+
+  async function remove() {
+    if (!globalThis.confirm('Remove GrabBit browser registrations? Downloads and history will remain untouched.')) return;
+    setDiagnosticError(null);
+    try { await removeBrowserIntegration(); refresh(); }
+    catch (reason) { setDiagnosticError(message(reason)); }
+  }
+
+  async function copyReport() {
+    const report = {
+      applicationVersion: setup?.appVersion, packagedExtensionVersion: setup?.packagedExtensionVersion,
+      nativeHostVersion: setup?.nativeHostVersion, protocolVersion: setup?.protocolVersion,
+      platform: diagnostics?.platform, ipcAvailable: diagnostics?.ipcAvailable,
+      extensionConnected: diagnostics?.extensionConnected, lastSuccessfulPingAt: diagnostics?.lastSuccessfulPingAt,
+      captureDecision: diagnostics?.captureDecision, jobAcceptanceStatus: diagnostics?.jobAcceptanceStatus,
+      cancellationResult: diagnostics?.chromeCancellationResult, lastDownloadJobId: diagnostics?.lastDownloadJobId,
+      lastFailureCategory: diagnostics?.lastFailureCategory,
+      browsers: setup?.browsers.map(({ id, detected, nativeHostRegistered, hostExecutableValid }) => ({ id, detected, nativeHostRegistered, hostExecutableValid })),
+    };
+    await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+  }
+
+  return <div className="browser-diagnostics">
+    <div><strong>Application</strong><span>v{setup?.appVersion ?? 'Unknown'}</span></div>
+    <div><strong>Packaged extension</strong><span>v{setup?.packagedExtensionVersion ?? 'Unknown'}</span></div>
+    <div><strong>Protocol</strong><span>v{setup?.protocolVersion ?? 'Unknown'}</span></div>
+    <div><strong>Native host</strong><span>{diagnostics?.nativeHostRegistered ? 'Registered' : 'Not registered'}</span></div>
+    <div><strong>Private IPC</strong><span>{diagnostics?.ipcAvailable ? 'Available' : 'Unavailable'}</span></div>
+    <div><strong>Extension connected</strong><span>{diagnostics?.extensionConnected ? 'Yes' : 'No recent PING'}</span></div>
+    <div><strong>Last successful PING</strong><span>{diagnostics?.lastSuccessfulPingAt ? new Date(diagnostics.lastSuccessfulPingAt * 1000).toLocaleString() : 'None'}</span></div>
+    <div><strong>Automatic interception</strong><span>{diagnostics?.automaticInterceptionEnabled === null ? 'Unknown' : diagnostics?.automaticInterceptionEnabled ? 'Enabled' : 'Disabled'}</span></div>
+    <div><strong>Downloads permission</strong><span>{diagnostics?.downloadsPermissionGranted === null ? 'Unknown' : diagnostics?.downloadsPermissionGranted ? 'Granted' : 'Denied'}</span></div>
+    <div><strong>Last download event</strong><span>{diagnostics?.lastDownloadEventAt ? new Date(diagnostics.lastDownloadEventAt).toLocaleString() : 'None'}</span></div>
+    <div><strong>Last URL hostname</strong><span>{diagnostics?.lastUrlHostname ?? 'None'}</span></div>
+    <div><strong>Capture decision</strong><span>{diagnostics?.captureDecision ?? 'None'}</span></div>
+    <div><strong>GrabBit acceptance</strong><span>{diagnostics?.jobAcceptanceStatus ?? 'None'}</span></div>
+    <div><strong>Browser cancellation</strong><span>{diagnostics?.chromeCancellationResult ?? 'None'}</span></div>
+    <div><strong>Last job ID</strong><span>{diagnostics?.lastDownloadJobId ?? 'None'}</span></div>
+    <div><strong>Failure category</strong><span>{diagnostics?.lastFailureCategory ?? 'None'}</span></div>
+    <div className="diagnostic-actions">
+      <button className="secondary compact" onClick={refresh} type="button">Test connection status</button>
+      <button className="secondary compact" onClick={() => void repair()} type="button">Repair integration</button>
+      <button className="secondary compact" onClick={() => void remove()} type="button">Remove browser integration</button>
+      <button className="secondary compact" onClick={() => void copyReport().catch((reason: unknown) => setDiagnosticError(message(reason)))} type="button">Copy sanitized report</button>
+    </div>
+    {setup?.browsers.map((browser) => <div className="browser-status" key={browser.id}>
+      <strong>{browser.name}</strong>
+      <span>{browser.detected ? 'Detected' : 'Not detected'} · host {browser.nativeHostRegistered ? 'registered' : 'not registered'} · extension unknown until it connects</span>
+      {browser.setupLocation && <code>{browser.setupLocation}</code>}
+    </div>)}
+    {diagnostics?.manifestLocations.map((location) => <code key={location}>{location}</code>)}
+    {(diagnosticError ?? diagnostics?.lastError) && <p className="inline-error">{diagnosticError ?? diagnostics?.lastError}</p>}
+  </div>;
+}
+
+function OnboardingWizard({ settings, onChangeSettings, onClose, onError }: { settings: AppSettings; onChangeSettings: (settings: AppSettings) => void; onClose: () => void; onError: (error: string) => void }) {
+  const [step, setStep] = useState(0);
+  const [report, setReport] = useState<BrowserSetupReport | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const hasInitializedSelection = useRef(false);
+  const steps = ['Welcome', 'Detect browsers', 'Choose integrations', 'Install native host', 'Install extensions', 'Verify connection', 'Download preferences', 'Finish'];
+  const refresh = useCallback(() => {
+    void getBrowserSetup().then((next) => {
+      setReport(next);
+      if (!hasInitializedSelection.current) {
+        setSelected(new Set(next.browsers.filter((browser) => browser.detected && browser.id !== 'safari').map((browser) => browser.id)));
+        hasInitializedSelection.current = true;
+      } else {
+        const detected = new Set(next.browsers.filter((browser) => browser.detected && browser.id !== 'safari').map((browser) => browser.id));
+        setSelected((current) => new Set([...current].filter((id) => detected.has(id))));
+      }
+    }).catch((reason: unknown) => onError(message(reason)));
+  }, [onError]);
+  useEffect(refresh, [refresh]);
+  async function finish() {
+    try { await saveSettings(settings); await setOnboardingComplete(true); onClose(); }
+    catch (reason) { onError(message(reason)); }
+  }
+  async function skip() {
+    try { await setOnboardingComplete(true); onClose(); }
+    catch (reason) { onError(message(reason)); }
+  }
+  async function repair() {
+    if (!selected.size) { onError('Select at least one detected browser to configure.'); return; }
+    setBusy(true);
+    try { setReport(await repairBrowserIntegration([...selected])); }
+    catch (reason) { onError(message(reason)); }
+    finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop"><section aria-label="GrabBit setup" aria-modal="true" className="setup-wizard" role="dialog">
+    <header><img alt="GrabBit" src="/branding/logo-icon.png" /><div><h2>Welcome to GrabBit</h2><p>Browser integration setup · Step {step + 1} of {steps.length}</p></div><button className="icon-button" onClick={() => void skip()} title="Skip setup" type="button"><X size={18} /></button></header>
+    <div className="setup-progress">{steps.map((name, index) => <span className={index <= step ? 'active' : ''} key={name} title={name} />)}</div>
+    <div className="setup-body">
+      {step === 0 && <><h3>Fast downloads, with your browser under your control</h3><p>GrabBit works without an extension. This wizard optionally connects supported browsers using a private, user-scoped native host.</p></>}
+      {step === 1 && <><h3>Detected browsers</h3><div className="browser-list">{report?.browsers.length ? report.browsers.map((browser) => <div key={browser.id}><strong>{browser.name}</strong><span>{browser.detected ? 'Detected' : 'Not detected'}</span></div>) : <p>Browser detection is still loading. You can continue with manual downloads.</p>}</div><button className="secondary compact" onClick={refresh} type="button">Recheck browsers</button></>}
+      {step === 2 && <><h3>Choose browser integrations</h3><p>Set up only browsers you use. GrabBit never edits browser profiles or force-installs extensions.</p><div className="browser-list">{report?.browsers.filter((browser) => browser.detected).map((browser) => <label className="browser-choice" key={browser.id}><input checked={selected.has(browser.id)} disabled={browser.id === 'safari'} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(browser.id); else next.delete(browser.id); return next; })} type="checkbox" /><strong>{browser.name}</strong><span>{browser.id === 'safari' ? 'Requires signed Safari extension approval' : 'Include in guided setup'}</span></label>)}</div>{report && !report.browsers.some((browser) => browser.detected && browser.id !== 'safari') && <p>No supported browser was detected. You can skip integration and continue using manual downloads.</p>}</>}
+      {step === 3 && <><h3>Install or repair the native host</h3><p>This writes only GrabBit-owned user-level manifests and registration keys. It does not require browser policy changes.</p><button className="primary" disabled={busy || !selected.size} onClick={() => void repair()} type="button">{busy ? 'Repairing…' : 'Install / repair native host'}</button><code>{report?.hostExecutable}</code></>}
+      {step === 4 && <><h3>Approve the extension in your browser</h3><p>Browsers require your approval. Open the browser extension manager, enable Developer mode for this beta, choose Load unpacked, and select the folder below. Reload it after GrabBit upgrades.</p>{report?.browsers.filter((browser) => selected.has(browser.id) && browser.setupLocation).map((browser) => <div className="setup-path" key={browser.id}><strong>{browser.name}</strong><code>{browser.setupLocation}</code><button className="secondary compact" onClick={() => void navigator.clipboard.writeText(browser.setupLocation ?? '')} type="button">Copy path</button></div>)}</>}
+      {step === 5 && <><h3>Verify browser connectivity</h3><p>Open the GrabBit extension popup in each browser and confirm it says Connected. Per-browser installation cannot be inferred from browser detection alone.</p><BrowserDiagnosticsPanel /></>}
+      {step === 6 && <><h3>Download preferences</h3><label>Download directory<div className="field-with-action"><Folder size={17} /><input onChange={(event) => onChangeSettings({ ...settings, defaultDownloadDirectory: event.target.value })} value={settings.defaultDownloadDirectory} /><button className="secondary compact" onClick={() => void chooseDownloadDirectory().then((value) => value && onChangeSettings({ ...settings, defaultDownloadDirectory: value }))} type="button">Browse</button></div></label><label>Browser interception<select onChange={(event) => { const value = event.target.value as AppSettings['browserCaptureMode']; onChangeSettings({ ...settings, browserCaptureMode: value }); }} value={settings.browserCaptureMode}><option value="ask">Ask every time</option><option value="automatic">Automatic</option><option value="off">Disabled</option></select></label></>}
+      {step === 7 && <><h3>Setup is ready</h3><p>GrabBit remains usable for manual URLs even when no extension is installed. You can reopen this wizard from Settings at any time.</p></>}
+    </div>
+    <footer><button className="secondary" onClick={() => void skip()} type="button">Skip setup</button><div><button className="secondary" disabled={step === 0} onClick={() => setStep((value) => value - 1)} type="button">Back</button>{step < steps.length - 1 ? <button className="primary" onClick={() => setStep((value) => value + 1)} type="button">Continue</button> : <button className="primary" onClick={() => void finish()} type="button">Finish setup</button>}</div></footer>
+  </section></div>;
+}
 function SettingsSection({ children, description, id, title }: { children: React.ReactNode; description: string; id: string; title: string }) { return <section className="settings-section" id={id}><div className="section-heading"><div><h2>{title}</h2><p>{description}</p></div></div>{children}</section>; }
 function About({ backend }: { backend: string }) { return <section className="about-view"><div className="about-logo"><img alt="GrabBit" src="/branding/logo-icon.png" /></div><h2>GrabBit</h2><p>A resilient cross-platform download manager.</p><span className="version-pill">{backend}</span><div className="about-facts"><div><strong>Engine</strong><span>Rust + Tokio</span></div><div><strong>Desktop</strong><span>Tauri 2</span></div><div><strong>Protocols</strong><span>HTTP / HTTPS</span></div></div><p className="about-note">GrabBit validates ranged responses and persists recovery checkpoints before advancing progress.</p></section>; }
 

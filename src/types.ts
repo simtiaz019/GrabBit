@@ -105,6 +105,7 @@ export interface BrowserDiagnostics {
   manifestLocations: string[];
   extensionConnected: boolean;
   lastConnectionAt: number | null;
+  lastSuccessfulPingAt: number | null;
   lastError: string | null;
   automaticInterceptionEnabled: boolean | null;
   downloadsPermissionGranted: boolean | null;
@@ -113,4 +114,29 @@ export interface BrowserDiagnostics {
   captureDecision: string | null;
   jobAcceptanceStatus: string | null;
   chromeCancellationResult: string | null;
+  lastDownloadJobId: string | null;
+  lastFailureCategory: string | null;
+}
+
+export interface BrowserInstallation {
+  id: string;
+  name: string;
+  detected: boolean;
+  extensionInstalled: boolean | null;
+  extensionEnabled: boolean | null;
+  permissionsGranted: boolean | null;
+  nativeHostRegistered: boolean;
+  hostExecutableValid: boolean;
+  connected: boolean | null;
+  lastTestResult: string;
+  setupLocation: string | null;
+}
+
+export interface BrowserSetupReport {
+  appVersion: string;
+  packagedExtensionVersion: string | null;
+  nativeHostVersion: string;
+  protocolVersion: number;
+  hostExecutable: string;
+  browsers: BrowserInstallation[];
 }

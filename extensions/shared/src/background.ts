@@ -109,6 +109,15 @@ api.downloads.onCreated.addListener((item) => {
   });
 });
 
+api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const request = message as { type?: unknown; url?: unknown };
+  if (request.type !== 'GRABBIT_INSPECT_PAGE_MEDIA' || typeof request.url !== 'string' || !isEligibleUrl(request.url)) return;
+  void native('INSPECT_MEDIA', { url: request.url, authorizationConfirmed: false })
+    .then((response) => sendResponse(response))
+    .catch((reason: unknown) => sendResponse({ ok: false, message: safeError(reason) }));
+  return true;
+});
+
 void api.contextMenus.removeAll().then(() => {
   api.contextMenus.create({ id: 'grabbit-link', title: 'Download with GrabBit', contexts: ['link'] });
   api.contextMenus.create({ id: 'grabbit-media', title: 'Download video/audio with GrabBit', contexts: ['video', 'audio', 'page'] });

@@ -130,6 +130,7 @@ pub struct BrowserDiagnostics {
     pub manifest_locations: Vec<String>,
     pub extension_connected: bool,
     pub last_connection_at: Option<u64>,
+    pub last_successful_ping_at: Option<u64>,
     pub last_error: Option<String>,
     pub automatic_interception_enabled: Option<bool>,
     pub downloads_permission_granted: Option<bool>,
@@ -138,11 +139,14 @@ pub struct BrowserDiagnostics {
     pub capture_decision: Option<String>,
     pub job_acceptance_status: Option<String>,
     pub chrome_cancellation_result: Option<String>,
+    pub last_download_job_id: Option<String>,
+    pub last_failure_category: Option<String>,
 }
 
 #[derive(Debug, Default)]
 struct RuntimeStatus {
     last_connection_at: Option<u64>,
+    last_successful_ping_at: Option<u64>,
     last_error: Option<String>,
     automatic_interception_enabled: Option<bool>,
     downloads_permission_granted: Option<bool>,
@@ -151,6 +155,8 @@ struct RuntimeStatus {
     capture_decision: Option<String>,
     job_acceptance_status: Option<String>,
     chrome_cancellation_result: Option<String>,
+    last_download_job_id: Option<String>,
+    last_failure_category: Option<String>,
 }
 
 static RUNTIME_STATUS: LazyLock<Mutex<RuntimeStatus>> =
@@ -163,6 +169,25 @@ fn record_connection() {
             .ok()
             .map(|duration| duration.as_secs());
         status.last_error = None;
+    }
+}
+
+fn record_ping() {
+    if let Ok(mut status) = RUNTIME_STATUS.lock() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs());
+        status.last_connection_at = now;
+        status.last_successful_ping_at = now;
+        status.last_error = None;
+    }
+}
+
+fn record_capture_result(job_id: Option<uuid::Uuid>, failure_category: Option<&str>) {
+    if let Ok(mut status) = RUNTIME_STATUS.lock() {
+        status.last_download_job_id = job_id.map(|id| id.to_string());
+        status.last_failure_category = failure_category.map(ToOwned::to_owned);
     }
 }
 
@@ -215,13 +240,21 @@ pub fn diagnostics(data_directory: &Path) -> BrowserDiagnostics {
     let extension_connected = last_connection_at
         .zip(now)
         .is_some_and(|(last, current)| current.saturating_sub(last) <= 120);
+    let native_host_registered =
+        crate::browser_integration::setup_report(&data_directory.join("browser-extensions"))
+            .browsers
+            .iter()
+            .any(|browser| browser.native_host_registered);
     BrowserDiagnostics {
         platform: std::env::consts::OS,
         ipc_available,
-        native_host_registered: !manifest_locations.is_empty(),
+        native_host_registered,
         manifest_locations,
         extension_connected,
         last_connection_at,
+        last_successful_ping_at: status
+            .as_ref()
+            .and_then(|value| value.last_successful_ping_at),
         last_error,
         automatic_interception_enabled: status
             .as_ref()
@@ -244,6 +277,12 @@ pub fn diagnostics(data_directory: &Path) -> BrowserDiagnostics {
         chrome_cancellation_result: status
             .as_ref()
             .and_then(|value| value.chrome_cancellation_result.clone()),
+        last_download_job_id: status
+            .as_ref()
+            .and_then(|value| value.last_download_job_id.clone()),
+        last_failure_category: status
+            .as_ref()
+            .and_then(|value| value.last_failure_category.clone()),
     }
 }
 
@@ -371,7 +410,7 @@ async fn dispatch_common(
     let request_id = request.request_id;
     match request.message {
         BrowserRequest::Ping => {
-            record_connection();
+            record_ping();
             success(
                 request_id,
                 ResponseCode::Pong,
@@ -463,30 +502,42 @@ async fn dispatch_common(
                 })
                 .await
             {
-                Ok(BrowserCaptureResult::Created(job_id)) => success(
-                    request_id,
-                    ResponseCode::Accepted,
-                    "download durably queued",
-                    Some(job_id),
-                    None,
-                ),
-                Ok(BrowserCaptureResult::Duplicate(job_id)) => success(
-                    request_id,
-                    ResponseCode::Duplicate,
-                    "capture was already queued",
-                    Some(job_id),
-                    None,
-                ),
-                Ok(BrowserCaptureResult::Pending) => ResponseEnvelope::error(
-                    Some(request_id),
-                    ResponseCode::Duplicate,
-                    "capture is already being processed",
-                ),
-                Err(error) => ResponseEnvelope::error(
-                    Some(request_id),
-                    ResponseCode::Rejected,
-                    error.to_string(),
-                ),
+                Ok(BrowserCaptureResult::Created(job_id)) => {
+                    record_capture_result(Some(job_id), None);
+                    success(
+                        request_id,
+                        ResponseCode::Accepted,
+                        "download durably queued",
+                        Some(job_id),
+                        None,
+                    )
+                }
+                Ok(BrowserCaptureResult::Duplicate(job_id)) => {
+                    record_capture_result(Some(job_id), None);
+                    success(
+                        request_id,
+                        ResponseCode::Duplicate,
+                        "capture was already queued",
+                        Some(job_id),
+                        None,
+                    )
+                }
+                Ok(BrowserCaptureResult::Pending) => {
+                    record_capture_result(None, Some("duplicate_pending"));
+                    ResponseEnvelope::error(
+                        Some(request_id),
+                        ResponseCode::Duplicate,
+                        "capture is already being processed",
+                    )
+                }
+                Err(error) => {
+                    record_capture_result(None, Some("capture_rejected"));
+                    ResponseEnvelope::error(
+                        Some(request_id),
+                        ResponseCode::Rejected,
+                        error.to_string(),
+                    )
+                }
             }
         }
         BrowserRequest::InspectMedia(inspect) => {
@@ -496,6 +547,10 @@ async fn dispatch_common(
                     ResponseCode::Rejected,
                     "browser-asserted authorization is not accepted; confirm in GrabBit",
                 );
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
             }
             match app.emit("browser-media-request", inspect.url) {
                 Ok(()) => success(

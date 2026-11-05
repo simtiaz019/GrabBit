@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "GrabBit Browser Integration",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Send authorized HTTP/HTTPS downloads and media pages to GrabBit.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzPKfzFCW2/L8t/0MsfuSLc+knXiHYQytx0PuwpF2r6pEdLVOQfRNfG/fds88OWuZOkAUMS9qCVwmhTuTVb+V6QEf/4PZ+Mf4NWo7vhTqI/XGLhCHt0Ab0zXAzTVUfGEW7IopzUAKPOFzpCXc3H80UIMQIj1d3NXQQYMjNuJOaCyuwvvkt7Kt8DKUp7T9OkupThWqr9sDLVt9kTmfeU5izGagW+x+cTtBArevDYnRCh8FiR5Htdy+ojbpJ3UcGgeWy8/XdMIMK9Ti/YQHKsv19TE6hT+KY5xIoFVtl3Illh2ENkz+IrUd4iAX6eCFltebOie7nBZizU0P9wyltszFtwIDAQAB",
   "permissions": ["nativeMessaging", "downloads", "contextMenus", "storage", "activeTab"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["media-action.js"], "run_at": "document_idle" }],
   "action": { "default_popup": "popup.html", "default_title": "GrabBit" },
   "icons": { "16": "icon.png", "48": "icon.png", "128": "icon.png" }
 }

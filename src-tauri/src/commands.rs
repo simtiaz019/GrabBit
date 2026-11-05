@@ -206,6 +206,67 @@ pub async fn get_browser_diagnostics(
     Ok(crate::browser_ipc::diagnostics(&data_directory))
 }
 
+fn app_data_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    std::env::var_os("GRABBIT_DATA_DIRECTORY")
+        .map(PathBuf::from)
+        .map_or_else(
+            || app.path().app_data_dir().map_err(|error| error.to_string()),
+            Ok,
+        )
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+pub fn get_browser_setup(
+    app: AppHandle,
+) -> Result<crate::browser_integration::BrowserSetupReport, String> {
+    let data_directory = app_data_directory(&app)?;
+    Ok(crate::browser_integration::setup_report(
+        &data_directory.join("browser-extensions"),
+    ))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command arguments are deserialized by value.
+pub fn repair_browser_integration(
+    app: AppHandle,
+    browser_ids: Vec<String>,
+) -> Result<crate::browser_integration::BrowserSetupReport, String> {
+    crate::browser_integration::repair_native_messaging(&browser_ids)?;
+    get_browser_setup(app)
+}
+
+#[tauri::command]
+pub fn remove_browser_integration() -> Result<(), String> {
+    crate::browser_integration::remove_native_messaging()
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+pub fn get_onboarding_complete(app: AppHandle) -> Result<bool, String> {
+    Ok(app_data_directory(&app)?
+        .join("onboarding-v1.complete")
+        .is_file())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+pub fn set_onboarding_complete(app: AppHandle, complete: bool) -> Result<(), String> {
+    let marker = app_data_directory(&app)?.join("onboarding-v1.complete");
+    if complete {
+        if let Some(parent) = marker.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::write(marker, b"completed\n").map_err(|error| error.to_string())
+    } else {
+        match std::fs::remove_file(marker) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

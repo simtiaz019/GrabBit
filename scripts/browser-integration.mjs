@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, stat, unlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -67,7 +67,8 @@ const origin = `http://127.0.0.1:${port}`;
 const children = [];
 function startDesktop() {
   const child = spawn(desktopPath, [], { env: { ...process.env, GRABBIT_DATA_DIRECTORY: appData,
-    GRABBIT_DEFAULT_DOWNLOAD_DIRECTORY: downloads, GRABBIT_ENABLE_AUTOMATIC_CAPTURE: '1' }, stdio: 'ignore' });
+    HOME: root, GRABBIT_DEFAULT_DOWNLOAD_DIRECTORY: downloads, GRABBIT_ENABLE_AUTOMATIC_CAPTURE: '1' },
+    stdio: ['ignore', 'inherit', 'inherit'] });
   children.push(child); return child;
 }
 function startBrowser() {
@@ -76,7 +77,7 @@ function startBrowser() {
     '--no-default-browser-check', '--enable-unsafe-extension-debugging',
     '--disable-features=DisableLoadExtensionCommandLineSwitch',
     `--download-default-directory=${browserDownloads}`, `chrome-extension://${extensionId}/popup.html`],
-    { env: { ...process.env, GRABBIT_IPC_ENDPOINT: join(appData, 'browser-ipc.sock') }, stdio: 'ignore' });
+    { env: { ...process.env, HOME: root, GRABBIT_IPC_ENDPOINT: join(appData, 'browser-ipc.sock') }, stdio: 'ignore' });
   children.push(child); return child;
 }
 async function stopChild(child) {
@@ -170,6 +171,23 @@ try {
   let desktop = startDesktop();
   await waitFor(() => stat(join(appData, 'browser-ipc.sock')).then(value => value.isSocket()), 'desktop IPC');
   await waitFor(() => stat(join(appData, 'browser-extensions/chromium/manifest.json')), 'packaged extension sync');
+  const browserManifestRoot = browserPath.toLowerCase().includes('brave browser')
+    ? 'BraveSoftware/Brave-Browser'
+    : browserPath.toLowerCase().includes('google chrome')
+      ? 'Google/Chrome'
+      : null;
+  if (!browserManifestRoot) throw new Error('the browser integration fixture supports Brave or Google Chrome');
+  const hostPath = join(root, 'Library/Application Support/GrabBit/grabbit-browser-host');
+  await waitFor(() => stat(hostPath), 'packaged native host sync');
+  const manifestDirectory = join(root, 'Library/Application Support', browserManifestRoot, 'NativeMessagingHosts');
+  await mkdir(manifestDirectory, { recursive: true });
+  await writeFile(join(manifestDirectory, 'com.grabbit.native.json'), JSON.stringify({
+    name: 'com.grabbit.native',
+    description: 'GrabBit secure browser bridge test fixture',
+    path: hostPath,
+    type: 'stdio',
+    allowed_origins: [`chrome-extension://${extensionId}/`],
+  }, null, 2));
   let browser = startBrowser(); let portNumber = await devtoolsPort(); let extension = await worker(portNumber);
   globalThis.console.error('Browser integration: extension loaded');
   const ping = await native(extension, 'PING', {}); if (!ping.response?.ok) throw new Error(`PING failed: ${JSON.stringify(ping)}`);

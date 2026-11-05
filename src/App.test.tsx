@@ -1,14 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload, retryDownload, saveSettings } from './bridge';
+import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getBrowserSetup, getOnboardingComplete, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, repairBrowserIntegration, resumeDownload, retryDownload, saveSettings, setOnboardingComplete } from './bridge';
 import type { ProgressSnapshot } from './types';
 
 vi.mock('./bridge', () => ({
   addDownload: vi.fn(), cancelDownload: vi.fn(), checkBackend: vi.fn(),
-  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getBrowserDiagnostics: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
+  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getBrowserDiagnostics: vi.fn(), getBrowserSetup: vi.fn(), getOnboardingComplete: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
   onBrowserMediaRequest: vi.fn(), onProgress: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
-  resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(),
+  removeBrowserIntegration: vi.fn(), repairBrowserIntegration: vi.fn(), resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(), setOnboardingComplete: vi.fn(),
 }));
 
 const job = {
@@ -27,7 +27,12 @@ describe('App', () => {
     vi.mocked(checkBackend).mockResolvedValue({ appName: 'GrabBit', version: '0.1.0', status: 'ok' });
     vi.mocked(listDownloads).mockResolvedValue([job]);
     vi.mocked(getSettings).mockResolvedValue({ maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '/Downloads', theme: 'system', browserCaptureMode: 'ask', browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' });
-    vi.mocked(getBrowserDiagnostics).mockResolvedValue({ platform: 'macos', ipcAvailable: true, nativeHostRegistered: true, manifestLocations: ['/manifest.json'], extensionConnected: false, lastConnectionAt: null, lastError: null, automaticInterceptionEnabled: false, downloadsPermissionGranted: true, lastDownloadEventAt: null, lastUrlHostname: null, captureDecision: null, jobAcceptanceStatus: null, chromeCancellationResult: null });
+    vi.mocked(getBrowserDiagnostics).mockResolvedValue({ platform: 'macos', ipcAvailable: true, nativeHostRegistered: true, manifestLocations: ['/manifest.json'], extensionConnected: false, lastConnectionAt: null, lastSuccessfulPingAt: null, lastError: null, automaticInterceptionEnabled: false, downloadsPermissionGranted: true, lastDownloadEventAt: null, lastUrlHostname: null, captureDecision: null, jobAcceptanceStatus: null, chromeCancellationResult: null, lastDownloadJobId: null, lastFailureCategory: null });
+    const setup = { appVersion: '0.1.0', packagedExtensionVersion: '0.3.0', nativeHostVersion: '0.1.0', protocolVersion: 1, hostExecutable: '/host', browsers: [{ id: 'chrome', name: 'Google Chrome', detected: true, extensionInstalled: null, extensionEnabled: null, permissionsGranted: null, nativeHostRegistered: true, hostExecutableValid: true, connected: null, lastTestResult: 'Not tested from this browser', setupLocation: '/extensions/chromium' }] };
+    vi.mocked(getBrowserSetup).mockResolvedValue(setup);
+    vi.mocked(repairBrowserIntegration).mockResolvedValue(setup);
+    vi.mocked(getOnboardingComplete).mockResolvedValue(true);
+    vi.mocked(setOnboardingComplete).mockResolvedValue();
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
     vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
     vi.mocked(probeUrl).mockResolvedValue({ finalUrl: job.url, fileName: job.fileName, contentLength: 1024, supportsRanges: true, etag: '"v1"', lastModified: null, contentType: 'application/octet-stream' });
@@ -56,6 +61,54 @@ describe('App', () => {
     fireEvent.change(captureMode, { target: { value: 'automatic' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ browserCaptureMode: 'automatic' })));
+  });
+
+  it('shows a skippable first-run browser setup without claiming extension installation', async () => {
+    vi.mocked(getOnboardingComplete).mockResolvedValue(false);
+    render(<App />);
+    expect(await screen.findByRole('dialog', { name: 'GrabBit setup' })).toBeVisible();
+    expect(screen.getByText(/works without an extension/i)).toBeVisible();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Skip setup' }).at(-1)!);
+    await waitFor(() => expect(setOnboardingComplete).toHaveBeenCalledWith(true));
+  });
+
+  it('preserves stored preferences when finishing first-run setup', async () => {
+    const storedSettings = {
+      maxConcurrentDownloads: 5, defaultSegments: 8, defaultDownloadDirectory: '/existing-downloads',
+      theme: 'dark' as const, browserCaptureMode: 'automatic' as const, browserExcludedSites: ['example.com'],
+      ytDlpPath: '/tools/yt-dlp', ffmpegPath: '/tools/ffmpeg', ffprobePath: '/tools/ffprobe',
+    };
+    vi.mocked(getSettings).mockResolvedValue(storedSettings);
+    vi.mocked(getOnboardingComplete).mockResolvedValue(false);
+    render(<App />);
+    const wizard = await screen.findByRole('dialog', { name: 'GrabBit setup' });
+    for (let step = 0; step < 7; step += 1) fireEvent.click(within(wizard).getByRole('button', { name: 'Continue' }));
+    fireEvent.click(within(wizard).getByRole('button', { name: 'Finish setup' }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(storedSettings));
+  });
+
+  it('repairs only the browser selected in first-run setup', async () => {
+    vi.mocked(getOnboardingComplete).mockResolvedValue(false);
+    render(<App />);
+    const wizard = await screen.findByRole('dialog', { name: 'GrabBit setup' });
+    fireEvent.click(within(wizard).getByRole('button', { name: 'Continue' }));
+    fireEvent.click(within(wizard).getByRole('button', { name: 'Continue' }));
+    fireEvent.click(within(wizard).getByRole('button', { name: 'Continue' }));
+    fireEvent.click(within(wizard).getByRole('button', { name: 'Install / repair native host' }));
+    await waitFor(() => expect(repairBrowserIntegration).toHaveBeenCalledWith(['chrome']));
+  });
+
+  it('opens the media inspection dialog for a browser media request', async () => {
+    let requestMedia: ((url: string) => void) | undefined;
+    vi.mocked(onBrowserMediaRequest).mockImplementation(async (callback) => {
+      requestMedia = callback;
+      return () => undefined;
+    });
+    render(<App />);
+    await waitFor(() => expect(requestMedia).toBeDefined());
+    act(() => requestMedia?.('https://media.example/watch/1'));
+    const dialog = await screen.findByRole('dialog', { name: 'Add media download' });
+    expect(within(dialog).getByPlaceholderText('https://media.example/watch/…')).toHaveValue('https://media.example/watch/1');
   });
 
   it('inspects metadata and submits a download', async () => {

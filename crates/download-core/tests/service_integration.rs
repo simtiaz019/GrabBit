@@ -1,14 +1,16 @@
-use std::{sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::State,
     http::{HeaderMap, Method, Response, StatusCode, header},
     routing::any,
 };
 use download_common::DownloadState;
 use download_core::{AddDownloadRequest, DownloadService};
+use futures_util::stream;
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use tokio::{net::TcpListener, time::sleep};
 
@@ -54,6 +56,33 @@ async fn fixture(
         .status(StatusCode::OK)
         .header(header::CONTENT_LENGTH, length)
         .body(Body::from(bytes.as_ref().clone()))
+        .expect("response")
+}
+
+async fn slow_fixture(State(bytes): State<Arc<Vec<u8>>>, method: Method) -> Response<Body> {
+    if method == Method::HEAD {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(Body::empty())
+            .expect("response");
+    }
+    let length = bytes.len();
+    let body = stream::unfold((bytes, 0_usize), |(bytes, offset)| async move {
+        if offset >= bytes.len() {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let end = (offset + 8 * 1024).min(bytes.len());
+        Some((
+            Ok::<_, Infallible>(Bytes::copy_from_slice(&bytes[offset..end])),
+            (bytes, end),
+        ))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_LENGTH, length)
+        .body(Body::from_stream(body))
         .expect("response")
 }
 
@@ -111,4 +140,72 @@ async fn persists_downloads_and_finalizes_exact_content() {
         sleep(Duration::from_millis(25)).await;
     }
     panic!("download did not complete in time");
+}
+
+#[tokio::test]
+async fn manual_download_pauses_resumes_and_verifies_sha256() {
+    let bytes = Arc::new(
+        (0_u32..1024 * 1024)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let expected_hash = format!("{:x}", Sha256::digest(bytes.as_slice()));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let app = Router::new()
+        .route("/slow.bin", any(slow_fixture))
+        .with_state(bytes.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
+
+    let data = tempdir().expect("data directory");
+    let downloads = tempdir().expect("download directory");
+    let service = DownloadService::open(data.path()).await.expect("service");
+    let job = service
+        .add(AddDownloadRequest {
+            url: format!("http://{address}/slow.bin"),
+            destination_directory: downloads.path().to_path_buf(),
+            segments: 1,
+            sha256: Some(expected_hash.clone()),
+        })
+        .await
+        .expect("enqueue");
+
+    for _ in 0..100 {
+        let current = service.list().await.expect("list");
+        let current = current
+            .iter()
+            .find(|entry| entry.id == job.id)
+            .expect("job");
+        if current.state == DownloadState::Downloading {
+            sleep(Duration::from_millis(40)).await;
+            service.pause(job.id).await.expect("pause");
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    let paused = service.list().await.expect("list");
+    let paused = paused.iter().find(|entry| entry.id == job.id).expect("job");
+    assert_eq!(paused.state, DownloadState::Paused);
+    assert!(paused.downloaded_bytes > 0);
+
+    service.resume(job.id).await.expect("resume");
+    for _ in 0..200 {
+        let current = service.list().await.expect("list");
+        let current = current
+            .iter()
+            .find(|entry| entry.id == job.id)
+            .expect("job");
+        if current.state == DownloadState::Completed {
+            let actual = tokio::fs::read(&current.destination)
+                .await
+                .expect("final file");
+            assert_eq!(actual, *bytes);
+            assert_eq!(format!("{:x}", Sha256::digest(&actual)), expected_hash);
+            assert_eq!(current.total_bytes, Some(bytes.len() as u64));
+            return;
+        }
+        assert_ne!(current.state, DownloadState::Failed, "{:?}", current.error);
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("resumed manual download did not complete");
 }
