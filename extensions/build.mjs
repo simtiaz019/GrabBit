@@ -1,10 +1,17 @@
 import { cp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-const root = fileURLToPath(new globalThis.URL('.', import.meta.url));
-execFileSync(join(root, '..', 'node_modules', '.bin', 'tsc'), ['-p', join(root, 'tsconfig.json')], { stdio: 'inherit' });
+const root = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const typescriptCli = require.resolve('typescript/bin/tsc');
+execFileSync(process.execPath, [typescriptCli, '-p', join(root, 'tsconfig.json')], {
+  cwd: root,
+  stdio: 'inherit',
+});
 async function validateModuleSpecifiers(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
