@@ -39,28 +39,38 @@ Apple credentials and cannot be asserted by CI.
 ## Milestone checklist
 
 - [x] M2.1 repository and architecture audit
-- [ ] M2.2 native messaging host and desktop IPC — complete on macOS/Linux; secure Windows named-pipe transport remains
-- [ ] M2.3 Chromium extension — implementation/build complete; real Chrome, Brave, and Edge runs remain
-- [ ] M2.4 Firefox extension and Safari bridge/package template — Firefox implementation/build complete; browser run and signed Safari reply channel remain
+- [x] M2.2 native messaging host and desktop IPC — bounded Unix socket and current-user Windows named-pipe implementations complete; Windows requires native verification
+- [ ] M2.3 Chromium extension — implementation/build and Brave run complete; Chrome/Edge limitations are recorded below
+- [ ] M2.4 Firefox extension and Safari bridge/package template — Firefox implementation/build and Safari request/reply bridge complete; browser/signing runs remain
 - [x] M2.5 media detection and inspection
-- [ ] M2.6 media selection and processing — execution/finalization complete; byte progress and deterministic FFmpeg fixture coverage remain
-- [ ] M2.7 desktop UI integration — real format selection and stages complete; secure thumbnail proxy remains
+- [x] M2.6 media selection and processing — execution/finalization, structured byte progress, process-tree cancellation, and FFmpeg fixtures complete
+- [x] M2.7 desktop UI integration — format selection, stages, browser diagnostics, and secure in-memory thumbnail proxy complete
 - [x] M2.8 database and settings migration
 - [x] M2.9 security and privacy controls
-- [ ] M2.10 deterministic tests — protocol, policy, storage, parsing, Phase 1 integration, and UI covered; real tool fixtures remain
-- [ ] M2.11 packaging and installation — per-user manifests/scripts complete; Windows IPC and signed Safari packaging remain
-- [ ] M2.12 release verification — runnable checks recorded below; browser/platform smoke tests remain
+- [x] M2.10 deterministic tests — protocol, policy, storage, parsing, Phase 1 integration, UI, real FFmpeg/FFprobe fixtures, and fake-adapter progress/cancellation covered
+- [ ] M2.11 packaging and installation — per-user install/uninstall scripts, Windows pipe, and Safari target resources complete; signed Safari and native Windows packages remain
+- [ ] M2.12 release verification — macOS checks and Brave smoke test complete; unavailable browsers and native Windows/Linux/Safari runners remain
 
 The checklist is updated only after implementation and relevant checks.
 
 ## Browser support verification matrix
 
-| Browser | Extension build | Native manifest | Desktop IPC | Real browser smoke test |
+| Browser | Extension build | Native manifest | Desktop IPC | Real browser smoke test (2026-11-05) |
 | --- | --- | --- | --- | --- |
-| Chrome / Brave / Edge, macOS/Linux | Implemented | Implemented | Implemented | Not run |
-| Firefox, macOS/Linux | Implemented | Implemented | Implemented | Not run |
-| Chrome / Brave / Edge / Firefox, Windows | Implemented | Implemented | Blocked: current-user named pipe | Not run |
-| Safari | Shared resources and Swift validation scaffold | Xcode signing required | Reply channel incomplete | Not run |
+| Brave 155, macOS | Pass | Pass | Pass | **Pass:** pong, durable 8 MiB capture, duplicate acknowledgement, app-unavailable response, browser restart, and desktop restart |
+| Google Chrome 156, macOS | Pass | Pass | Pass independently | **Blocked:** the installed production build ignores command-line unpacked-extension loading; no false smoke claim |
+| Google Chrome for Testing 157, macOS | Pass; service worker starts | Requires `/Library/Google/ChromeForTesting`, which needs administrator access | Not reached | **Blocked:** test browser does not read the per-user production Chrome manifest |
+| Edge, macOS | Pass | Installer tolerates absent browser | Pass by shared Chromium path | Not run: browser unavailable |
+| Firefox, macOS | Pass | Pass | Pass by shared Unix path | Not run: browser unavailable |
+| Chromium family / Firefox, Linux | Pass | Pass | Pass by shared bounded Unix-socket path | Not run: Linux environment unavailable |
+| Chromium family / Firefox, Windows | Pass | Pass | Implemented with a random capability pipe, remote-client rejection, bounded messages, and timeouts | Not run: Windows environment unavailable |
+| Safari | Resources, manifest, Swift handler, state helper, and entitlements prepared | Xcode signing required | App-group request/reply path implemented | Not run: full Xcode and signing credentials unavailable |
+
+The Brave smoke test exercises the final release native host and final extension
+origin allowlist. Automatic interception and context-menu UI still require an
+interactive browser permission/UI gesture: the optional all-sites permission is
+deliberately not pre-granted or bypassed by the test harness. Their policy and
+acknowledgement behavior remain covered by deterministic extension tests.
 
 Automatic capture cannot reliably reproduce POST downloads, blob URLs,
 browser-internal pages, service-worker-private requests, or authenticated
@@ -70,16 +80,17 @@ rejected instead of being persisted in plaintext.
 
 ## Verification record
 
-The final verification record is populated only with commands successfully run
-in the working tree. Apple signing, real-browser smoke tests, Windows IPC, and
-public-network media sources are not CI claims.
+The final verification record distinguishes successful checks from environment
+blockers. Apple signing, native Windows/Linux execution, unavailable browsers,
+and public-network media sources are not claimed.
 
 Successfully run on macOS arm64 on 2026-11-05:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo test --workspace --all-targets --all-features` (29 tests)
+- `cargo test --workspace --all-targets --all-features` (33 tests, including two real FFmpeg/FFprobe integration tests)
 - `cargo check --workspace --all-targets --all-features`
+- `cargo check --target x86_64-pc-windows-msvc -p browser-native-host --all-targets`
 - `npm run lint`
 - `npm run typecheck`
 - `npm run extension:typecheck`
@@ -87,6 +98,20 @@ Successfully run on macOS arm64 on 2026-11-05:
 - `npm run extension:build`
 - `npm run build`
 - `cargo build --release --bin grabbit-browser-host`
-- native-host framing smoke test (approved origin; app-unavailable fallback)
+- `./safari/prepare-resources.sh`, plist/entitlement validation, and `swiftc -parse` for both Swift sources
+- native-host framing and Brave browser smoke tests (approved origin, durable capture, duplicate handling, unavailable response, and restarts)
 - `npm run tauri build` (ad-hoc signed `.app` and `.dmg`; notarization skipped
   because Apple credentials were unavailable)
+
+The media fixture test generates and probes MP4, WebM, M4A, Opus, split
+audio/video, merged output, HLS, and DASH locally. It also verifies SHA-256
+readability, corrupt/unsupported failure paths, structured adapter progress, and
+process-group cancellation. Real yt-dlp execution is blocked because yt-dlp is
+not installed and GrabBit's dependency policy requires users to install and
+configure external media tools explicitly.
+
+The Windows native host cross-check passed. A full desktop cross-check stopped
+in the third-party `aws-lc-sys` build because this macOS machine has no Windows
+SDK headers; the named-pipe server therefore remains source- and host-client
+checked but not natively verified. Linux uses the already-tested Unix transport,
+but no Linux runtime was available for a native smoke test.

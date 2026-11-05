@@ -63,11 +63,12 @@ service workers, or POST requests cannot be captured reliably; those downloads
 remain in the browser. GrabBit does not forward cookies, authentication headers,
 or request bodies.
 
-The current user-scoped desktop IPC transport is implemented on macOS and
-Linux. The Windows manifest installer is present, but the host deliberately
-reports the desktop app as unavailable until a current-user-only Windows named
-pipe implementation is completed; it does not fall back to an insecure local
-HTTP service.
+The desktop IPC transport uses a mode-0600 Unix socket on macOS/Linux. Windows
+uses a random current-user capability pipe recorded under the user's app-data
+directory; remote pipe clients are rejected and every exchange is size- and
+time-bounded. No platform falls back to an unauthenticated local HTTP service.
+Use the matching `uninstall-unix.sh` or `uninstall-windows.ps1` script to remove
+the manifests and copied host binary.
 
 ## Media tools
 
@@ -76,6 +77,11 @@ absolute executable paths in **Settings > Media tools**. GrabBit validates the
 paths and invokes them directly without a shell. It never downloads or executes
 tool updates silently. Review the tools' licenses and your media provider's
 terms before use.
+
+Tool processes run in a cancellable process group where the platform supports
+it. Thumbnails are fetched only from credential-free public HTTPS destinations,
+with DNS rebinding/redirect checks, a strict MIME allowlist, and a three-MiB
+limit; remote thumbnail URLs are never handed directly to the webview.
 
 The media dialog lists only formats reported by the extractor. `Original`
 avoids an intentional conversion; MP4/WebM/MKV may remux compatible streams;
