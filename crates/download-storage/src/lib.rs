@@ -602,6 +602,54 @@ impl DownloadStorage {
         self.update_state(id, lifecycle_state, error, updated_at)
             .await
     }
+
+    /// Persists a throttled media progress update in both queue and media metadata.
+    ///
+    /// # Errors
+    /// Returns a database or numeric conversion error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_media_progress(
+        &self,
+        id: Uuid,
+        lifecycle_state: DownloadState,
+        media_stage: &str,
+        downloaded: u64,
+        total: Option<u64>,
+        speed: u64,
+        eta: Option<u64>,
+        updated_at: i64,
+    ) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE download_jobs SET state = ?, downloaded_bytes = ?, total_bytes = ?,
+             speed_bytes_per_second = ?, eta_seconds = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(state_name(lifecycle_state))
+        .bind(to_i64(downloaded)?)
+        .bind(optional_i64(total)?)
+        .bind(to_i64(speed)?)
+        .bind(optional_i64(eta)?)
+        .bind(updated_at)
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE media_jobs SET state = ?, stage = ?, downloaded_bytes = ?, total_bytes = ?,
+             speed_bytes_per_second = ?, eta_seconds = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(state_name(lifecycle_state))
+        .bind(media_stage)
+        .bind(to_i64(downloaded)?)
+        .bind(optional_i64(total)?)
+        .bind(to_i64(speed)?)
+        .bind(optional_i64(eta)?)
+        .bind(updated_at)
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

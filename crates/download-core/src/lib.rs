@@ -17,7 +17,7 @@ use download_storage::{
 use http_engine::{DownloadRequest, EngineConfig, EngineError, EngineEvent, HttpEngine};
 use media_engine::{
     Availability, InspectRequest, MediaDownloadRequest, MediaError, MediaInspector, MediaOutput,
-    ToolConfig, YtDlpAdapter,
+    MediaProgress, MediaStage, ToolConfig, YtDlpAdapter,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -631,6 +631,27 @@ impl DownloadService {
         self.progress.subscribe()
     }
 
+    /// Cancels active transfers and waits briefly for durable checkpoint and
+    /// child-process cleanup during application shutdown.
+    pub async fn shutdown(&self) {
+        let tokens = self
+            .active
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for token in tokens {
+            token.cancel();
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(8), async {
+            while !self.active.lock().await.is_empty() {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+
     async fn schedule(self: &Arc<Self>, id: DownloadId) -> Result<(), ServiceError> {
         let token = CancellationToken::new();
         self.active.lock().await.insert(id, token.clone());
@@ -721,7 +742,56 @@ impl DownloadService {
         });
         let settings = self.storage.settings().await?;
         let adapter = media_adapter(&settings)?;
-        adapter
+        let processing_state = if record.output_format == "original" {
+            DownloadState::Downloading
+        } else if matches!(record.output_format.as_str(), "mp4" | "webm" | "mkv") {
+            DownloadState::Merging
+        } else {
+            DownloadState::Converting
+        };
+        let (media_events, mut media_receiver) = mpsc::channel::<MediaProgress>(16);
+        let progress_storage = self.storage.clone();
+        let progress_sender = self.progress.clone();
+        let initial_total = job.total_bytes;
+        let progress_task = tokio::spawn(async move {
+            let mut downloaded = 0_u64;
+            while let Some(event) = media_receiver.recv().await {
+                downloaded = event.downloaded_bytes.unwrap_or(downloaded);
+                let total = event.total_bytes.or(initial_total);
+                let state = if event.stage == MediaStage::PostProcessing {
+                    processing_state
+                } else {
+                    DownloadState::Downloading
+                };
+                let progress_stage = state_stage(state);
+                let speed = event.speed_bytes_per_second.unwrap_or(0);
+                if let Ok(timestamp) = now()
+                    && progress_storage
+                        .update_media_progress(
+                            id,
+                            state,
+                            progress_stage,
+                            downloaded,
+                            total,
+                            speed,
+                            event.eta_seconds,
+                            timestamp,
+                        )
+                        .await
+                        .is_ok()
+                {
+                    let _ = progress_sender.send(ProgressSnapshot {
+                        id,
+                        state,
+                        downloaded_bytes: downloaded,
+                        total_bytes: total,
+                        speed_bytes_per_second: speed,
+                        eta_seconds: event.eta_seconds,
+                    });
+                }
+            }
+        });
+        let download_result = adapter
             .download(
                 &MediaDownloadRequest {
                     url: record.source_url,
@@ -731,36 +801,15 @@ impl DownloadService {
                     authorization_confirmed: true,
                 },
                 token.clone(),
+                Some(media_events),
             )
-            .await?;
+            .await;
+        progress_task
+            .await
+            .map_err(|error| ServiceError::Io(std::io::Error::other(error)))?;
+        download_result?;
         if token.is_cancelled() {
             return Ok(());
-        }
-        let processing_state = if record.output_format == "original" {
-            DownloadState::Verifying
-        } else if matches!(record.output_format.as_str(), "mp4" | "webm" | "mkv") {
-            DownloadState::Merging
-        } else {
-            DownloadState::Converting
-        };
-        if processing_state != DownloadState::Verifying {
-            self.storage
-                .update_media_stage(
-                    id,
-                    processing_state,
-                    state_stage(processing_state),
-                    None,
-                    now()?,
-                )
-                .await?;
-            let _ = self.progress.send(ProgressSnapshot {
-                id,
-                state: processing_state,
-                downloaded_bytes: job.downloaded_bytes,
-                total_bytes: job.total_bytes,
-                speed_bytes_per_second: 0,
-                eta_seconds: None,
-            });
         }
         self.storage
             .update_media_stage(id, DownloadState::Verifying, "verifying", None, now()?)
@@ -1041,6 +1090,7 @@ fn media_partial_path(destination: &Path) -> PathBuf {
 
 fn state_stage(state: DownloadState) -> &'static str {
     match state {
+        DownloadState::Downloading => "downloading",
         DownloadState::Merging => "merging",
         DownloadState::Converting => "converting",
         DownloadState::Verifying => "verifying",

@@ -9,11 +9,13 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::{Child, Command},
+    sync::mpsc,
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
@@ -46,6 +48,8 @@ pub enum MediaError {
     UnknownFormat,
     #[error("the requested output path is unsafe")]
     UnsafeOutput,
+    #[error("thumbnail was rejected by security policy")]
+    ThumbnailRejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +152,119 @@ pub struct MediaDownloadRequest {
     pub authorization_confirmed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaStage {
+    Downloading,
+    PostProcessing,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaProgress {
+    pub stage: MediaStage,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub speed_bytes_per_second: Option<u64>,
+    pub eta_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecureThumbnail {
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Fetches a public HTTPS image without forwarding credentials or following
+/// unrestricted redirects.
+///
+/// # Errors
+/// Returns [`MediaError::ThumbnailRejected`] for unsafe locations, types, sizes,
+/// redirects, DNS results, or HTTP failures.
+pub async fn fetch_secure_thumbnail(value: &str) -> Result<SecureThumbnail, MediaError> {
+    const MAX_BYTES: usize = 3 * 1024 * 1024;
+    const MAX_REDIRECTS: usize = 2;
+    let mut url = Url::parse(value).map_err(|_| MediaError::ThumbnailRejected)?;
+    for redirect_count in 0..=MAX_REDIRECTS {
+        validate_thumbnail_url(&url)?;
+        let host = url
+            .host_str()
+            .ok_or(MediaError::ThumbnailRejected)?
+            .to_owned();
+        let port = url
+            .port_or_known_default()
+            .ok_or(MediaError::ThumbnailRejected)?;
+        let addresses = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|_| MediaError::ThumbnailRejected)?
+            .collect::<Vec<_>>();
+        if addresses.is_empty() || addresses.iter().any(|address| !is_global_ip(address.ip())) {
+            return Err(MediaError::ThumbnailRejected);
+        }
+        let mut builder = reqwest::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(12))
+            .user_agent("GrabBit/0.1 thumbnail-fetcher");
+        if matches!(url.host(), Some(Host::Domain(_))) {
+            builder = builder.resolve(&host, addresses[0]);
+        }
+        let response = builder
+            .build()
+            .map_err(|_| MediaError::ThumbnailRejected)?
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|_| MediaError::ThumbnailRejected)?;
+        if response.status().is_redirection() {
+            if redirect_count == MAX_REDIRECTS {
+                return Err(MediaError::ThumbnailRejected);
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|header| header.to_str().ok())
+                .ok_or(MediaError::ThumbnailRejected)?;
+            url = url
+                .join(location)
+                .map_err(|_| MediaError::ThumbnailRejected)?;
+            continue;
+        }
+        if !response.status().is_success()
+            || response
+                .content_length()
+                .is_some_and(|length| length > MAX_BYTES as u64)
+        {
+            return Err(MediaError::ThumbnailRejected);
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|header| header.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "image/jpeg" | "image/png" | "image/webp" | "image/gif"
+                )
+            })
+            .ok_or(MediaError::ThumbnailRejected)?
+            .to_owned();
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| MediaError::ThumbnailRejected)?;
+            if bytes.len().saturating_add(chunk.len()) > MAX_BYTES {
+                return Err(MediaError::ThumbnailRejected);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return Ok(SecureThumbnail {
+            content_type,
+            bytes,
+        });
+    }
+    Err(MediaError::ThumbnailRejected)
+}
+
 #[async_trait]
 pub trait MediaInspector: Send + Sync {
     async fn inspect(
@@ -216,6 +333,7 @@ impl YtDlpAdapter {
         &self,
         request: &MediaDownloadRequest,
         cancellation: CancellationToken,
+        progress: Option<mpsc::Sender<MediaProgress>>,
     ) -> Result<(), MediaError> {
         ensure_authorized_url(&request.url, request.authorization_confirmed)?;
         validate_output_path(&request.output_path)?;
@@ -229,7 +347,14 @@ impl YtDlpAdapter {
         let mut owned = vec![
             "--no-playlist".to_owned(),
             "--no-part".to_owned(),
-            "--quiet".to_owned(),
+            "--no-warnings".to_owned(),
+            "--newline".to_owned(),
+            "--progress-delta".to_owned(),
+            "0.25".to_owned(),
+            "--progress-template".to_owned(),
+            "download:grabbit-progress|download|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s".to_owned(),
+            "--progress-template".to_owned(),
+            "postprocess:grabbit-progress|postprocess|NA|NA|NA|NA|NA".to_owned(),
             "--no-write-info-json".to_owned(),
             "--ffmpeg-location".to_owned(),
             ffmpeg,
@@ -242,11 +367,12 @@ impl YtDlpAdapter {
         owned.push("--".to_owned());
         owned.push(request.url.clone());
         let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
-        run_tool(
+        run_download_tool(
             &self.tools.yt_dlp,
             &args,
             Duration::from_hours(24),
             cancellation,
+            progress,
         )
         .await?;
         Ok(())
@@ -379,6 +505,36 @@ fn is_sensitive_query_name(name: &str) -> bool {
     .any(|candidate| name == *candidate || name.ends_with(&format!("_{candidate}")))
 }
 
+fn validate_thumbnail_url(url: &Url) -> Result<(), MediaError> {
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url
+            .query_pairs()
+            .any(|(name, _)| is_sensitive_query_name(&name))
+    {
+        return Err(MediaError::ThumbnailRejected);
+    }
+    match url.host() {
+        Some(Host::Ipv4(ip)) if is_global_ipv4(ip) => Ok(()),
+        Some(Host::Ipv6(ip)) if is_global_ipv6(ip) => Ok(()),
+        Some(Host::Domain(name))
+            if !name.eq_ignore_ascii_case("localhost") && !name.ends_with(".localhost") =>
+        {
+            Ok(())
+        }
+        _ => Err(MediaError::ThumbnailRejected),
+    }
+}
+
+fn is_global_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_global_ipv4(ip),
+        IpAddr::V6(ip) => is_global_ipv6(ip),
+    }
+}
+
 fn is_global_ipv6(ip: std::net::Ipv6Addr) -> bool {
     let addr = IpAddr::V6(ip);
     !(addr.is_loopback()
@@ -446,21 +602,95 @@ fn append_output_args(args: &mut Vec<String>, output: &MediaOutput) {
     }
 }
 
+async fn run_download_tool(
+    path: &Path,
+    args: &[&str],
+    limit: Duration,
+    cancellation: CancellationToken,
+    progress: Option<mpsc::Sender<MediaProgress>>,
+) -> Result<(), MediaError> {
+    let mut child = restricted_command(path, args).spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| MediaError::InvalidMetadata("stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| MediaError::InvalidMetadata("stderr unavailable".into()))?;
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        let mut observed = 0_usize;
+        while let Some(line) = lines.next_line().await? {
+            observed = observed.saturating_add(line.len());
+            if observed > MAX_TOOL_OUTPUT {
+                return Err(MediaError::OutputLimit);
+            }
+            if let Some(event) = parse_progress_line(&line)
+                && let Some(sender) = &progress
+            {
+                let _ = sender.send(event).await;
+            }
+        }
+        Ok::<(), MediaError>(())
+    });
+    let stderr_task = tokio::spawn(read_bounded(stderr));
+    let status = wait_child(&mut child, limit, cancellation).await?;
+    stdout_task
+        .await
+        .map_err(|error| MediaError::InvalidMetadata(error.to_string()))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| MediaError::InvalidMetadata(error.to_string()))??;
+    if status.success() {
+        Ok(())
+    } else {
+        drop(stderr);
+        Err(tool_exit_error(status))
+    }
+}
+
+fn parse_progress_line(line: &str) -> Option<MediaProgress> {
+    let fields = line
+        .strip_prefix("grabbit-progress|")?
+        .split('|')
+        .collect::<Vec<_>>();
+    if fields.len() != 6 {
+        return None;
+    }
+    let stage = match fields[0] {
+        "download" => MediaStage::Downloading,
+        "postprocess" => MediaStage::PostProcessing,
+        _ => return None,
+    };
+    Some(MediaProgress {
+        stage,
+        downloaded_bytes: parse_progress_number(fields[1]),
+        total_bytes: parse_progress_number(fields[2]).or_else(|| parse_progress_number(fields[3])),
+        speed_bytes_per_second: parse_progress_number(fields[4]),
+        eta_seconds: parse_progress_number(fields[5]),
+    })
+}
+
+fn parse_progress_number(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || matches!(value, "NA" | "None") {
+        return None;
+    }
+    value.parse::<f64>().ok().and_then(|number| {
+        (number.is_finite() && number >= 0.0)
+            .then(|| format!("{number:.0}").parse::<u64>().ok())
+            .flatten()
+    })
+}
+
 async fn run_tool(
     path: &Path,
     args: &[&str],
     limit: Duration,
     cancellation: CancellationToken,
 ) -> Result<Vec<u8>, MediaError> {
-    let mut child = Command::new(path)
-        .args(args)
-        .env_clear()
-        .env("PATH", path.parent().unwrap_or_else(|| Path::new("")))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut child = restricted_command(path, args).spawn()?;
     let stdout = child
         .stdout
         .take()
@@ -480,14 +710,36 @@ async fn run_tool(
         .map_err(|error| MediaError::InvalidMetadata(error.to_string()))??;
     if !status.success() {
         drop(stderr);
-        return Err(MediaError::ToolFailed(format!(
-            "process exited with status {} (details withheld to protect source credentials)",
-            status
-                .code()
-                .map_or_else(|| "signal".into(), |code| code.to_string())
-        )));
+        return Err(tool_exit_error(status));
     }
     Ok(stdout)
+}
+
+fn restricted_command(path: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(path);
+    command
+        .args(args)
+        .env_clear()
+        .env("PATH", path.parent().unwrap_or_else(|| Path::new("")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+    command
+}
+
+fn tool_exit_error(status: std::process::ExitStatus) -> MediaError {
+    MediaError::ToolFailed(format!(
+        "process exited with status {} (details withheld to protect source credentials)",
+        status
+            .code()
+            .map_or_else(|| "signal".into(), |code| code.to_string())
+    ))
 }
 
 async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
@@ -520,14 +772,28 @@ async fn wait_child(
     cancellation: CancellationToken,
 ) -> Result<std::process::ExitStatus, MediaError> {
     tokio::select! {
-        () = cancellation.cancelled() => { let _ = child.kill().await; Err(MediaError::Cancelled) }
+        () = cancellation.cancelled() => { terminate_child(child).await; Err(MediaError::Cancelled) }
         result = timeout(limit, child.wait()) => if let Ok(status) = result {
             status.map_err(MediaError::Spawn)
         } else {
-            let _ = child.kill().await;
+            terminate_child(child).await;
             Err(MediaError::Timeout)
         }
     }
+}
+
+async fn terminate_child(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(id) = child.id()
+        && let Ok(pid) = i32::try_from(id)
+    {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 fn first_line(bytes: &[u8]) -> String {
@@ -697,5 +963,43 @@ mod tests {
     fn rejects_drm_only_metadata_without_formats() {
         let json = br#"{"title":"Protected","has_drm":true,"formats":[]}"#;
         assert!(parse_inspection(json, "https://example.com").is_err());
+    }
+
+    #[test]
+    fn parses_delimited_progress_without_inventing_unknown_values() {
+        let event = parse_progress_line("grabbit-progress|download|1048576|2097152|NA|524288|2")
+            .expect("progress");
+        assert_eq!(event.stage, MediaStage::Downloading);
+        assert_eq!(event.downloaded_bytes, Some(1_048_576));
+        assert_eq!(event.total_bytes, Some(2_097_152));
+        assert_eq!(event.speed_bytes_per_second, Some(524_288));
+        assert_eq!(event.eta_seconds, Some(2));
+
+        let unknown = parse_progress_line("grabbit-progress|postprocess|NA|NA|NA|NA|NA")
+            .expect("postprocess");
+        assert_eq!(unknown.stage, MediaStage::PostProcessing);
+        assert_eq!(unknown.total_bytes, None);
+    }
+
+    #[test]
+    fn thumbnail_policy_requires_public_credential_free_https() {
+        for value in [
+            "http://example.com/image.jpg",
+            "https://127.0.0.1/image.jpg",
+            "https://user:secret@example.com/image.jpg",
+            "https://example.com/image.jpg?token=secret",
+        ] {
+            let url = Url::parse(value).expect("url");
+            assert!(matches!(
+                validate_thumbnail_url(&url),
+                Err(MediaError::ThumbnailRejected)
+            ));
+        }
+        assert!(
+            validate_thumbnail_url(
+                &Url::parse("https://images.example.com/preview.webp").expect("url")
+            )
+            .is_ok()
+        );
     }
 }
