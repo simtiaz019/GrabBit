@@ -8,10 +8,17 @@ use std::{
 };
 
 use download_common::{
-    AppSettings, DownloadId, DownloadJob, DownloadState, ProgressSnapshot, RemoteMetadata,
+    AppSettings, DownloadId, DownloadJob, DownloadKind, DownloadState, ProgressSnapshot,
+    RemoteMetadata,
 };
-use download_storage::{DownloadStorage, SegmentCheckpoint, StorageError};
+use download_storage::{
+    BrowserCaptureReservation, DownloadStorage, MediaRecord, SegmentCheckpoint, StorageError,
+};
 use http_engine::{DownloadRequest, EngineConfig, EngineError, EngineEvent, HttpEngine};
+use media_engine::{
+    Availability, InspectRequest, MediaDownloadRequest, MediaError, MediaInspector, MediaOutput,
+    ToolConfig, YtDlpAdapter,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
@@ -29,6 +36,32 @@ pub struct AddDownloadRequest {
     pub destination_directory: PathBuf,
     pub segments: u8,
     pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrowserCaptureRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub url: String,
+    pub browser: String,
+    pub source_origin: Option<String>,
+    pub automatic: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AddMediaRequest {
+    pub url: String,
+    pub destination_directory: PathBuf,
+    pub format_ids: Vec<String>,
+    pub output: MediaOutput,
+    pub authorization_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserCaptureResult {
+    Created(DownloadId),
+    Duplicate(DownloadId),
+    Pending,
 }
 
 #[derive(Debug, Error)]
@@ -55,6 +88,16 @@ pub enum ServiceError {
     InvalidTransition(DownloadState, DownloadState),
     #[error("system clock is before the Unix epoch")]
     Clock,
+    #[error(transparent)]
+    Media(#[from] MediaError),
+    #[error("browser capture is disabled")]
+    BrowserCaptureDisabled,
+    #[error("this website is excluded from browser capture")]
+    BrowserSiteExcluded,
+    #[error(
+        "signed or credential-bearing browser URLs are not persisted; use the browser's original download"
+    )]
+    SensitiveBrowserUrl,
 }
 
 pub struct DownloadService {
@@ -141,6 +184,7 @@ impl DownloadService {
             url: metadata.final_url.clone(),
             destination: destination.to_string_lossy().into_owned(),
             file_name: metadata.file_name,
+            kind: DownloadKind::File,
             state: DownloadState::Queued,
             total_bytes: metadata.content_length,
             downloaded_bytes: 0,
@@ -173,6 +217,197 @@ impl DownloadService {
         Ok(job)
     }
 
+    /// Idempotently adds a browser-captured URL through the ordinary durable queue path.
+    ///
+    /// # Errors
+    /// Returns policy, storage, destination, or HTTP validation errors.
+    pub async fn capture_browser_download(
+        self: &Arc<Self>,
+        request: BrowserCaptureRequest,
+    ) -> Result<BrowserCaptureResult, ServiceError> {
+        let settings = self.storage.settings().await?;
+        if !settings.browser_capture_enabled {
+            return Err(ServiceError::BrowserCaptureDisabled);
+        }
+        if request.automatic && !settings.browser_automatic_interception {
+            return Err(ServiceError::BrowserCaptureDisabled);
+        }
+        let parsed_url = url::Url::parse(&request.url).ok();
+        if parsed_url.as_ref().is_some_and(|url| {
+            url.query_pairs().any(|(name, _)| {
+                let name = name.to_ascii_lowercase();
+                [
+                    "token",
+                    "signature",
+                    "sig",
+                    "policy",
+                    "credential",
+                    "auth",
+                    "authorization",
+                    "x-amz-signature",
+                    "x-goog-signature",
+                ]
+                .iter()
+                .any(|candidate| name == *candidate || name.ends_with(&format!("_{candidate}")))
+            })
+        }) {
+            return Err(ServiceError::SensitiveBrowserUrl);
+        }
+        let host = parsed_url.and_then(|url| url.host_str().map(str::to_ascii_lowercase));
+        if host.as_ref().is_some_and(|host| {
+            settings.browser_excluded_sites.iter().any(|site| {
+                let site = site.trim().trim_start_matches("*.").to_ascii_lowercase();
+                !site.is_empty() && (host == &site || host.ends_with(&format!(".{site}")))
+            })
+        }) {
+            return Err(ServiceError::BrowserSiteExcluded);
+        }
+        match self
+            .storage
+            .reserve_browser_capture(
+                request.idempotency_key,
+                request.request_id,
+                &request.browser,
+                request.source_origin.as_deref(),
+                now()?,
+            )
+            .await?
+        {
+            BrowserCaptureReservation::Existing(id) => {
+                return Ok(BrowserCaptureResult::Duplicate(id));
+            }
+            BrowserCaptureReservation::Pending => return Ok(BrowserCaptureResult::Pending),
+            BrowserCaptureReservation::Reserved => {}
+        }
+        let result = self
+            .add(AddDownloadRequest {
+                url: request.url,
+                destination_directory: PathBuf::from(settings.default_download_directory),
+                segments: settings.default_segments,
+                sha256: None,
+            })
+            .await;
+        match result {
+            Ok(job) => {
+                self.storage
+                    .commit_browser_capture(request.idempotency_key, job.id)
+                    .await?;
+                Ok(BrowserCaptureResult::Created(job.id))
+            }
+            Err(error) => {
+                self.storage
+                    .release_browser_capture(request.idempotency_key)
+                    .await?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Re-inspects, persists, and schedules an explicitly authorized media selection.
+    ///
+    /// # Errors
+    /// Returns tool, authorization, format, destination, or storage errors.
+    pub async fn add_media(
+        self: &Arc<Self>,
+        request: AddMediaRequest,
+    ) -> Result<DownloadJob, ServiceError> {
+        let settings = self.storage.settings().await?;
+        let destination_directory = if request.destination_directory.as_os_str().is_empty() {
+            PathBuf::from(&settings.default_download_directory)
+        } else {
+            request.destination_directory
+        };
+        if !fs::metadata(&destination_directory)
+            .await
+            .map_err(|_| ServiceError::InvalidDestination)?
+            .is_dir()
+        {
+            return Err(ServiceError::InvalidDestination);
+        }
+        let adapter = media_adapter(&settings)?;
+        let inspection = adapter
+            .inspect(
+                &InspectRequest {
+                    url: request.url.clone(),
+                    authorization_confirmed: request.authorization_confirmed,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        if matches!(
+            inspection.availability,
+            Availability::DrmProtected | Availability::LoginRequired | Availability::Unavailable
+        ) {
+            return Err(ServiceError::Media(MediaError::ToolFailed(
+                "media is protected, restricted, or unavailable; use the website's official download/export option".into(),
+            )));
+        }
+        let selected = request
+            .format_ids
+            .iter()
+            .map(|id| {
+                inspection
+                    .formats
+                    .iter()
+                    .find(|format| &format.id == id)
+                    .ok_or(MediaError::UnknownFormat)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if selected.is_empty() || selected.len() > 4 {
+            return Err(ServiceError::Media(MediaError::UnknownFormat));
+        }
+        let extension = output_extension(&request.output, &selected)?;
+        let file_name = format!("{}.{}", sanitize_media_name(&inspection.title), extension);
+        let destination = destination_directory.join(&file_name);
+        let temporary = media_partial_path(&destination);
+        if fs::try_exists(&destination).await? || fs::try_exists(&temporary).await? {
+            return Err(ServiceError::DestinationExists);
+        }
+        let timestamp = now()?;
+        let total_bytes = selected.iter().try_fold(0_u64, |sum, format| {
+            format
+                .estimated_bytes
+                .map(|bytes| sum.saturating_add(bytes))
+        });
+        let job = DownloadJob {
+            id: Uuid::new_v4(),
+            url: inspection.source_url.clone(),
+            destination: destination.to_string_lossy().into_owned(),
+            file_name,
+            kind: DownloadKind::Media,
+            state: DownloadState::Queued,
+            total_bytes,
+            downloaded_bytes: 0,
+            speed_bytes_per_second: 0,
+            eta_seconds: None,
+            segments: 1,
+            etag: None,
+            last_modified: None,
+            sha256: None,
+            error: None,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        self.storage.insert_job(&job).await?;
+        let record = MediaRecord {
+            id: job.id,
+            source_url: inspection.source_url,
+            title: inspection.title,
+            website: inspection.website,
+            destination: job.destination.clone(),
+            selected_format_ids: request.format_ids,
+            output_format: output_name(&request.output).into(),
+            stage: "queued".into(),
+            temporary_path: temporary.to_string_lossy().into_owned(),
+        };
+        if let Err(error) = self.storage.insert_media_record(&record, timestamp).await {
+            self.storage.delete_job(job.id).await?;
+            return Err(ServiceError::Storage(error));
+        }
+        self.schedule_media(job.id).await?;
+        Ok(job)
+    }
+
     /// Returns persistent queue and history entries.
     ///
     /// # Errors
@@ -195,7 +430,11 @@ impl DownloadService {
             .ok_or(ServiceError::NotFound)?;
         if !matches!(
             job.state,
-            DownloadState::Downloading | DownloadState::Queued
+            DownloadState::Downloading
+                | DownloadState::Merging
+                | DownloadState::Converting
+                | DownloadState::Verifying
+                | DownloadState::Queued
         ) {
             return Err(ServiceError::InvalidTransition(
                 job.state,
@@ -209,9 +448,16 @@ impl DownloadService {
                 sleep(Duration::from_millis(10)).await;
             }
         }
-        self.storage
-            .update_state(id, DownloadState::Paused, None, now()?)
-            .await?;
+        let timestamp = now()?;
+        if job.kind == DownloadKind::Media {
+            self.storage
+                .update_media_stage(id, DownloadState::Paused, "paused", None, timestamp)
+                .await?;
+        } else {
+            self.storage
+                .update_state(id, DownloadState::Paused, None, timestamp)
+                .await?;
+        }
         let paused = self
             .storage
             .get_job(id)
@@ -244,6 +490,26 @@ impl DownloadService {
                 job.state,
                 DownloadState::Queued,
             ));
+        }
+        if job.kind == DownloadKind::Media {
+            let record = self
+                .storage
+                .media_record(id)
+                .await?
+                .ok_or(ServiceError::NotFound)?;
+            if let Err(error) = fs::remove_file(&record.temporary_path).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(ServiceError::Io(error));
+            }
+            let timestamp = now()?;
+            self.storage
+                .update_progress(id, 0, 0, None, timestamp)
+                .await?;
+            self.storage
+                .update_media_stage(id, DownloadState::Queued, "queued", None, timestamp)
+                .await?;
+            return self.schedule_media(id).await;
         }
         let metadata = self.engine.probe(&job.url).await?;
         ensure_same_resource(&job, &metadata)?;
@@ -282,9 +548,16 @@ impl DownloadService {
                 DownloadState::Cancelled,
             ));
         }
-        self.storage
-            .update_state(id, DownloadState::Cancelled, None, now()?)
-            .await?;
+        let timestamp = now()?;
+        if job.kind == DownloadKind::Media {
+            self.storage
+                .update_media_stage(id, DownloadState::Cancelled, "cancelled", None, timestamp)
+                .await?;
+        } else {
+            self.storage
+                .update_state(id, DownloadState::Cancelled, None, timestamp)
+                .await?;
+        }
         if let Some(token) = self.active.lock().await.get(&id) {
             token.cancel();
         }
@@ -304,14 +577,25 @@ impl DownloadService {
             .ok_or(ServiceError::NotFound)?;
         if matches!(
             job.state,
-            DownloadState::Downloading | DownloadState::Queued
+            DownloadState::Downloading
+                | DownloadState::Merging
+                | DownloadState::Converting
+                | DownloadState::Verifying
+                | DownloadState::Queued
         ) {
             return Err(ServiceError::InvalidTransition(
                 job.state,
                 DownloadState::Cancelled,
             ));
         }
-        let partial = partial_path(Path::new(&job.destination));
+        let partial = if job.kind == DownloadKind::Media {
+            self.storage.media_record(id).await?.map_or_else(
+                || partial_path(Path::new(&job.destination)),
+                |record| PathBuf::from(record.temporary_path),
+            )
+        } else {
+            partial_path(Path::new(&job.destination))
+        };
         if let Err(error) = fs::remove_file(partial).await
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -369,6 +653,144 @@ impl DownloadService {
                 }
             }
             service.active.lock().await.remove(&id);
+        });
+        Ok(())
+    }
+
+    async fn schedule_media(self: &Arc<Self>, id: DownloadId) -> Result<(), ServiceError> {
+        let token = CancellationToken::new();
+        self.active.lock().await.insert(id, token.clone());
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = service.run_media_job(id, token).await {
+                tracing::error!(job_id = %id, error = %error, "media download failed");
+                if let Ok(Some(job)) = service.storage.get_job(id).await
+                    && !matches!(job.state, DownloadState::Paused | DownloadState::Cancelled)
+                {
+                    let timestamp = now().unwrap_or(job.updated_at);
+                    let _ = service
+                        .storage
+                        .update_media_stage(
+                            id,
+                            DownloadState::Failed,
+                            "failed",
+                            Some(&error.to_string()),
+                            timestamp,
+                        )
+                        .await;
+                }
+            }
+            service.active.lock().await.remove(&id);
+        });
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn run_media_job(
+        &self,
+        id: DownloadId,
+        token: CancellationToken,
+    ) -> Result<(), ServiceError> {
+        let _permit = tokio::select! {
+            () = token.cancelled() => return Ok(()),
+            permit = self.concurrency.acquire() => permit.map_err(|_| ServiceError::NotFound)?,
+        };
+        let job = self
+            .storage
+            .get_job(id)
+            .await?
+            .ok_or(ServiceError::NotFound)?;
+        if job.state != DownloadState::Queued {
+            return Ok(());
+        }
+        let record = self
+            .storage
+            .media_record(id)
+            .await?
+            .ok_or(ServiceError::NotFound)?;
+        self.storage
+            .update_media_stage(id, DownloadState::Downloading, "downloading", None, now()?)
+            .await?;
+        let _ = self.progress.send(ProgressSnapshot {
+            id,
+            state: DownloadState::Downloading,
+            downloaded_bytes: job.downloaded_bytes,
+            total_bytes: job.total_bytes,
+            speed_bytes_per_second: 0,
+            eta_seconds: None,
+        });
+        let settings = self.storage.settings().await?;
+        let adapter = media_adapter(&settings)?;
+        adapter
+            .download(
+                &MediaDownloadRequest {
+                    url: record.source_url,
+                    format_ids: record.selected_format_ids,
+                    output: parse_output(&record.output_format)?,
+                    output_path: PathBuf::from(&record.temporary_path),
+                    authorization_confirmed: true,
+                },
+                token.clone(),
+            )
+            .await?;
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        let processing_state = if record.output_format == "original" {
+            DownloadState::Verifying
+        } else if matches!(record.output_format.as_str(), "mp4" | "webm" | "mkv") {
+            DownloadState::Merging
+        } else {
+            DownloadState::Converting
+        };
+        if processing_state != DownloadState::Verifying {
+            self.storage
+                .update_media_stage(
+                    id,
+                    processing_state,
+                    state_stage(processing_state),
+                    None,
+                    now()?,
+                )
+                .await?;
+            let _ = self.progress.send(ProgressSnapshot {
+                id,
+                state: processing_state,
+                downloaded_bytes: job.downloaded_bytes,
+                total_bytes: job.total_bytes,
+                speed_bytes_per_second: 0,
+                eta_seconds: None,
+            });
+        }
+        self.storage
+            .update_media_stage(id, DownloadState::Verifying, "verifying", None, now()?)
+            .await?;
+        let _ = self.progress.send(ProgressSnapshot {
+            id,
+            state: DownloadState::Verifying,
+            downloaded_bytes: job.downloaded_bytes,
+            total_bytes: job.total_bytes,
+            speed_bytes_per_second: 0,
+            eta_seconds: None,
+        });
+        let temporary = PathBuf::from(record.temporary_path);
+        let file = fs::OpenOptions::new().read(true).open(&temporary).await?;
+        file.sync_all().await?;
+        let bytes = file.metadata().await?.len();
+        finalize_without_overwrite(&temporary, Path::new(&record.destination)).await?;
+        self.storage
+            .update_progress(id, bytes, 0, Some(0), now()?)
+            .await?;
+        self.storage
+            .update_media_stage(id, DownloadState::Completed, "completed", None, now()?)
+            .await?;
+        let _ = self.progress.send(ProgressSnapshot {
+            id,
+            state: DownloadState::Completed,
+            downloaded_bytes: bytes,
+            total_bytes: Some(bytes),
+            speed_bytes_per_second: 0,
+            eta_seconds: Some(0),
         });
         Ok(())
     }
@@ -524,6 +946,105 @@ impl DownloadService {
             }
             Err(error) => Err(ServiceError::Engine(error)),
         }
+    }
+}
+
+fn media_adapter(settings: &AppSettings) -> Result<YtDlpAdapter, ServiceError> {
+    Ok(YtDlpAdapter::new(ToolConfig::from_paths(
+        PathBuf::from(&settings.yt_dlp_path),
+        PathBuf::from(&settings.ffmpeg_path),
+        PathBuf::from(&settings.ffprobe_path),
+    ))?)
+}
+
+fn output_name(output: &MediaOutput) -> &'static str {
+    match output {
+        MediaOutput::Original => "original",
+        MediaOutput::Mp4 => "mp4",
+        MediaOutput::WebM => "webm",
+        MediaOutput::Mkv => "mkv",
+        MediaOutput::Mp3 => "mp3",
+        MediaOutput::M4a => "m4a",
+        MediaOutput::Aac => "aac",
+        MediaOutput::Opus => "opus",
+        MediaOutput::Flac => "flac",
+        MediaOutput::Wav => "wav",
+    }
+}
+
+fn parse_output(value: &str) -> Result<MediaOutput, ServiceError> {
+    Ok(match value {
+        "original" => MediaOutput::Original,
+        "mp4" => MediaOutput::Mp4,
+        "webm" => MediaOutput::WebM,
+        "mkv" => MediaOutput::Mkv,
+        "mp3" => MediaOutput::Mp3,
+        "m4a" => MediaOutput::M4a,
+        "aac" => MediaOutput::Aac,
+        "opus" => MediaOutput::Opus,
+        "flac" => MediaOutput::Flac,
+        "wav" => MediaOutput::Wav,
+        _ => return Err(ServiceError::Media(MediaError::UnknownFormat)),
+    })
+}
+
+fn output_extension(
+    output: &MediaOutput,
+    selected: &[&media_engine::MediaFormat],
+) -> Result<String, ServiceError> {
+    if *output == MediaOutput::Original {
+        selected
+            .first()
+            .and_then(|format| format.extension.clone())
+            .ok_or(ServiceError::Media(MediaError::UnknownFormat))
+    } else {
+        Ok(output_name(output).to_owned())
+    }
+}
+
+fn sanitize_media_name(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let trimmed = cleaned.trim().trim_matches('.');
+    let result = trimmed.chars().take(180).collect::<String>();
+    if result.is_empty() {
+        "media".into()
+    } else {
+        result
+    }
+}
+
+fn media_partial_path(destination: &Path) -> PathBuf {
+    let stem = destination
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("media");
+    let extension = destination
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("bin");
+    destination.with_file_name(format!("{stem}.grabbit-media-part.{extension}"))
+}
+
+fn state_stage(state: DownloadState) -> &'static str {
+    match state {
+        DownloadState::Merging => "merging",
+        DownloadState::Converting => "converting",
+        DownloadState::Verifying => "verifying",
+        _ => "processing",
     }
 }
 

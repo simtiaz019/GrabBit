@@ -2,12 +2,15 @@
 
 use std::path::Path;
 
-use download_common::{AppSettings, DownloadJob, DownloadState, Theme};
+use download_common::{AppSettings, DownloadJob, DownloadKind, DownloadState, Theme};
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use thiserror::Error;
 use uuid::Uuid;
 
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_initial.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_initial.sql")),
+    (2, include_str!("../migrations/0002_browser_media.sql")),
+];
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -27,6 +30,19 @@ pub struct SegmentCheckpoint {
     pub start_byte: u64,
     pub end_byte: u64,
     pub downloaded_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaRecord {
+    pub id: Uuid,
+    pub source_url: String,
+    pub title: String,
+    pub website: Option<String>,
+    pub destination: String,
+    pub selected_format_ids: Vec<String>,
+    pub output_format: String,
+    pub stage: String,
+    pub temporary_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -104,15 +120,16 @@ impl DownloadStorage {
     pub async fn insert_job(&self, job: &DownloadJob) -> Result<(), StorageError> {
         sqlx::query(
             "INSERT INTO download_jobs (
-                id, url, destination, file_name, state, total_bytes, downloaded_bytes,
+                id, url, destination, file_name, job_kind, state, total_bytes, downloaded_bytes,
                 speed_bytes_per_second, eta_seconds, segments, etag, last_modified,
                 sha256, error, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(job.id.to_string())
         .bind(&job.url)
         .bind(&job.destination)
         .bind(&job.file_name)
+        .bind(kind_name(job.kind))
         .bind(state_name(job.state))
         .bind(optional_i64(job.total_bytes)?)
         .bind(to_i64(job.downloaded_bytes)?)
@@ -309,7 +326,15 @@ impl DownloadStorage {
         let result = sqlx::query(
             "UPDATE download_jobs SET state = 'paused',
              error = 'Interrupted; source will be revalidated before resume', updated_at = ?
-             WHERE state IN ('inspecting', 'downloading')",
+             WHERE state IN ('inspecting', 'downloading', 'merging', 'converting', 'verifying')",
+        )
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE media_jobs SET state = 'paused', stage = 'paused',
+             error = 'Interrupted; media transfer will restart', updated_at = ?
+             WHERE state IN ('inspecting', 'downloading', 'merging', 'converting', 'verifying')",
         )
         .bind(updated_at)
         .execute(&self.pool)
@@ -342,11 +367,18 @@ impl DownloadStorage {
         let Some(row) = row else {
             return Ok(AppSettings::default());
         };
+        let preferences = self.browser_preferences().await?;
         Ok(AppSettings {
             max_concurrent_downloads: to_u8(row.try_get::<i64, _>("max_concurrent_downloads")?)?,
             default_segments: to_u8(row.try_get::<i64, _>("default_segments")?)?,
             default_download_directory: row.try_get("default_download_directory")?,
             theme: parse_theme(row.try_get("theme")?)?,
+            browser_capture_enabled: preferences.browser_capture_enabled,
+            browser_automatic_interception: preferences.browser_automatic_interception,
+            browser_excluded_sites: preferences.browser_excluded_sites,
+            yt_dlp_path: preferences.yt_dlp_path,
+            ffmpeg_path: preferences.ffmpeg_path,
+            ffprobe_path: preferences.ffprobe_path,
         })
     }
 
@@ -372,8 +404,211 @@ impl DownloadStorage {
         .bind(theme_name(settings.theme))
         .execute(&self.pool)
         .await?;
+        let excluded = serde_json::to_string(&settings.browser_excluded_sites)
+            .map_err(|error| StorageError::InvalidState(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO browser_preferences
+             (singleton, capture_enabled, automatic_interception, excluded_sites_json,
+              yt_dlp_path, ffmpeg_path, ffprobe_path)
+             VALUES (1, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(singleton) DO UPDATE SET
+             capture_enabled=excluded.capture_enabled,
+             automatic_interception=excluded.automatic_interception,
+             excluded_sites_json=excluded.excluded_sites_json,
+             yt_dlp_path=excluded.yt_dlp_path,
+             ffmpeg_path=excluded.ffmpeg_path,
+             ffprobe_path=excluded.ffprobe_path",
+        )
+        .bind(settings.browser_capture_enabled)
+        .bind(settings.browser_automatic_interception)
+        .bind(excluded)
+        .bind(&settings.yt_dlp_path)
+        .bind(&settings.ffmpeg_path)
+        .bind(&settings.ffprobe_path)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
+    async fn browser_preferences(&self) -> Result<AppSettings, StorageError> {
+        let Some(row) = sqlx::query("SELECT * FROM browser_preferences WHERE singleton = 1")
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(AppSettings::default());
+        };
+        let sites: String = row.try_get("excluded_sites_json")?;
+        Ok(AppSettings {
+            browser_capture_enabled: row.try_get("capture_enabled")?,
+            browser_automatic_interception: row.try_get("automatic_interception")?,
+            browser_excluded_sites: serde_json::from_str(&sites)
+                .map_err(|error| StorageError::InvalidState(error.to_string()))?,
+            yt_dlp_path: row.try_get("yt_dlp_path")?,
+            ffmpeg_path: row.try_get("ffmpeg_path")?,
+            ffprobe_path: row.try_get("ffprobe_path")?,
+            ..AppSettings::default()
+        })
+    }
+
+    /// Atomically reserves a browser idempotency key.
+    ///
+    /// # Errors
+    /// Returns a database error or an invalid persisted UUID error.
+    pub async fn reserve_browser_capture(
+        &self,
+        idempotency_key: Uuid,
+        request_id: Uuid,
+        browser: &str,
+        source_origin: Option<&str>,
+        created_at: i64,
+    ) -> Result<BrowserCaptureReservation, StorageError> {
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO browser_captures
+             (idempotency_key, request_id, browser, source_origin, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(idempotency_key.to_string())
+        .bind(request_id.to_string())
+        .bind(browser)
+        .bind(source_origin)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(BrowserCaptureReservation::Reserved);
+        }
+        let job_id: Option<String> =
+            sqlx::query_scalar("SELECT job_id FROM browser_captures WHERE idempotency_key = ?")
+                .bind(idempotency_key.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(match job_id {
+            Some(id) => BrowserCaptureReservation::Existing(Uuid::parse_str(&id)?),
+            None => BrowserCaptureReservation::Pending,
+        })
+    }
+
+    /// Links a reserved capture to its durably inserted queue job.
+    ///
+    /// # Errors
+    /// Returns a database error.
+    pub async fn commit_browser_capture(
+        &self,
+        idempotency_key: Uuid,
+        job_id: Uuid,
+    ) -> Result<(), StorageError> {
+        sqlx::query("UPDATE browser_captures SET job_id = ? WHERE idempotency_key = ?")
+            .bind(job_id.to_string())
+            .bind(idempotency_key.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Removes a failed reservation so a safe browser retry is possible.
+    ///
+    /// # Errors
+    /// Returns a database error.
+    pub async fn release_browser_capture(&self, idempotency_key: Uuid) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM browser_captures WHERE idempotency_key = ? AND job_id IS NULL")
+            .bind(idempotency_key.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Inserts media execution metadata linked by the shared queue identifier.
+    ///
+    /// # Errors
+    /// Returns a serialization or database error.
+    pub async fn insert_media_record(
+        &self,
+        record: &MediaRecord,
+        timestamp: i64,
+    ) -> Result<(), StorageError> {
+        let formats = serde_json::to_string(&record.selected_format_ids)
+            .map_err(|error| StorageError::InvalidState(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO media_jobs
+             (id, source_url, title, website, destination, selected_format_ids_json,
+              output_format, state, stage, temporary_path, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+        )
+        .bind(record.id.to_string())
+        .bind(&record.source_url)
+        .bind(&record.title)
+        .bind(&record.website)
+        .bind(&record.destination)
+        .bind(formats)
+        .bind(&record.output_format)
+        .bind(&record.stage)
+        .bind(&record.temporary_path)
+        .bind(timestamp)
+        .bind(timestamp)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Loads media execution metadata for a shared queue identifier.
+    ///
+    /// # Errors
+    /// Returns an error for database failures or corrupt persisted metadata.
+    pub async fn media_record(&self, id: Uuid) -> Result<Option<MediaRecord>, StorageError> {
+        let row = sqlx::query("SELECT * FROM media_jobs WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| {
+            let formats: String = row.try_get("selected_format_ids_json")?;
+            Ok(MediaRecord {
+                id: Uuid::parse_str(row.try_get("id")?)?,
+                source_url: row.try_get("source_url")?,
+                title: row.try_get("title")?,
+                website: row.try_get("website")?,
+                destination: row.try_get("destination")?,
+                selected_format_ids: serde_json::from_str(&formats)
+                    .map_err(|error| StorageError::InvalidState(error.to_string()))?,
+                output_format: row.try_get("output_format")?,
+                stage: row.try_get("stage")?,
+                temporary_path: row.try_get("temporary_path")?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Updates the media-specific stage and mirrors its lifecycle state.
+    ///
+    /// # Errors
+    /// Returns a database error.
+    pub async fn update_media_stage(
+        &self,
+        id: Uuid,
+        lifecycle_state: DownloadState,
+        media_stage: &str,
+        error: Option<&str>,
+        updated_at: i64,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE media_jobs SET state = ?, stage = ?, error = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(state_name(lifecycle_state))
+        .bind(media_stage)
+        .bind(error)
+        .bind(updated_at)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        self.update_state(id, lifecycle_state, error, updated_at)
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserCaptureReservation {
+    Reserved,
+    Pending,
+    Existing(Uuid),
 }
 
 fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<DownloadJob, StorageError> {
@@ -382,6 +617,7 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<DownloadJob, StorageError
         url: row.try_get("url")?,
         destination: row.try_get("destination")?,
         file_name: row.try_get("file_name")?,
+        kind: parse_kind(row.try_get("job_kind")?)?,
         state: parse_state(row.try_get("state")?)?,
         total_bytes: optional_u64(row.try_get("total_bytes")?)?,
         downloaded_bytes: to_u64(row.try_get("downloaded_bytes")?)?,
@@ -402,6 +638,9 @@ fn state_name(state: DownloadState) -> &'static str {
         DownloadState::Queued => "queued",
         DownloadState::Inspecting => "inspecting",
         DownloadState::Downloading => "downloading",
+        DownloadState::Merging => "merging",
+        DownloadState::Converting => "converting",
+        DownloadState::Verifying => "verifying",
         DownloadState::Paused => "paused",
         DownloadState::Completed => "completed",
         DownloadState::Failed => "failed",
@@ -414,10 +653,28 @@ fn parse_state(value: &str) -> Result<DownloadState, StorageError> {
         "queued" => Ok(DownloadState::Queued),
         "inspecting" => Ok(DownloadState::Inspecting),
         "downloading" => Ok(DownloadState::Downloading),
+        "merging" => Ok(DownloadState::Merging),
+        "converting" => Ok(DownloadState::Converting),
+        "verifying" => Ok(DownloadState::Verifying),
         "paused" => Ok(DownloadState::Paused),
         "completed" => Ok(DownloadState::Completed),
         "failed" => Ok(DownloadState::Failed),
         "cancelled" => Ok(DownloadState::Cancelled),
+        _ => Err(StorageError::InvalidState(value.to_owned())),
+    }
+}
+
+fn kind_name(kind: DownloadKind) -> &'static str {
+    match kind {
+        DownloadKind::File => "file",
+        DownloadKind::Media => "media",
+    }
+}
+
+fn parse_kind(value: &str) -> Result<DownloadKind, StorageError> {
+    match value {
+        "file" => Ok(DownloadKind::File),
+        "media" => Ok(DownloadKind::Media),
         _ => Err(StorageError::InvalidState(value.to_owned())),
     }
 }
@@ -469,6 +726,7 @@ mod tests {
             url: "https://example.com/file".into(),
             destination: "/tmp/file".into(),
             file_name: "file".into(),
+            kind: DownloadKind::File,
             state: DownloadState::Downloading,
             total_bytes: Some(100),
             downloaded_bytes: 20,
@@ -505,6 +763,12 @@ mod tests {
             default_segments: 8,
             default_download_directory: "/tmp".into(),
             theme: Theme::Dark,
+            browser_capture_enabled: false,
+            browser_automatic_interception: true,
+            browser_excluded_sites: vec!["example.com".into()],
+            yt_dlp_path: "/tools/yt-dlp".into(),
+            ffmpeg_path: "/tools/ffmpeg".into(),
+            ffprobe_path: "/tools/ffprobe".into(),
         };
         storage
             .save_settings(&settings)
@@ -542,5 +806,39 @@ mod tests {
             .checkpoint_segment(job.id, 0, 50)
             .await
             .expect("checkpoint");
+    }
+
+    #[tokio::test]
+    async fn browser_capture_reservations_are_idempotent() {
+        let storage = DownloadStorage::in_memory().await.expect("storage");
+        let key = Uuid::new_v4();
+        let request = Uuid::new_v4();
+        assert_eq!(
+            storage
+                .reserve_browser_capture(key, request, "firefox", Some("https://example.com"), 1)
+                .await
+                .expect("reserve"),
+            BrowserCaptureReservation::Reserved
+        );
+        assert_eq!(
+            storage
+                .reserve_browser_capture(key, request, "firefox", None, 1)
+                .await
+                .expect("duplicate pending"),
+            BrowserCaptureReservation::Pending
+        );
+        let job = fixture_job();
+        storage.insert_job(&job).await.expect("insert");
+        storage
+            .commit_browser_capture(key, job.id)
+            .await
+            .expect("commit");
+        assert_eq!(
+            storage
+                .reserve_browser_capture(key, request, "firefox", None, 1)
+                .await
+                .expect("duplicate committed"),
+            BrowserCaptureReservation::Existing(job.id)
+        );
     }
 }

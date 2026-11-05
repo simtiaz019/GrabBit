@@ -7,6 +7,8 @@ import type {
   HealthResponse,
   ProgressSnapshot,
   RemoteMetadata,
+  MediaInspection,
+  MediaOutput,
 } from './types';
 
 export const checkBackend = (): Promise<HealthResponse> => invoke('health_check');
@@ -29,6 +31,17 @@ export const getSettings = (): Promise<AppSettings> => invoke('get_settings');
 export const saveSettings = (settings: AppSettings): Promise<void> =>
   invoke('save_settings', { settings });
 
+export const inspectMedia = (url: string, authorizationConfirmed: boolean): Promise<MediaInspection> =>
+  invoke('inspect_media', { url, authorizationConfirmed });
+
+export const createMediaDownload = (request: {
+  url: string;
+  destinationDirectory: string;
+  formatIds: string[];
+  output: MediaOutput;
+  authorizationConfirmed: boolean;
+}): Promise<DownloadJob> => invoke('create_media_download', request);
+
 export async function chooseDownloadDirectory(): Promise<string | null> {
   const selected = await open({ directory: true, multiple: false, title: 'Choose download folder' });
   return typeof selected === 'string' ? selected : null;
@@ -37,3 +50,7 @@ export async function chooseDownloadDirectory(): Promise<string | null> {
 export const onProgress = (
   callback: (progress: ProgressSnapshot) => void,
 ): Promise<UnlistenFn> => listen<ProgressSnapshot>('download-progress', ({ payload }) => callback(payload));
+
+export const onBrowserMediaRequest = (
+  callback: (url: string) => void,
+): Promise<UnlistenFn> => listen<string>('browser-media-request', ({ payload }) => callback(payload));

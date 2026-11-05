@@ -1,19 +1,20 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { addDownload, cancelDownload, checkBackend, getSettings, listDownloads, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload, retryDownload, saveSettings } from './bridge';
+import { addDownload, cancelDownload, checkBackend, createMediaDownload, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload, retryDownload, saveSettings } from './bridge';
 import type { ProgressSnapshot } from './types';
 
 vi.mock('./bridge', () => ({
   addDownload: vi.fn(), cancelDownload: vi.fn(), checkBackend: vi.fn(),
-  chooseDownloadDirectory: vi.fn(), getSettings: vi.fn(), listDownloads: vi.fn(),
-  onProgress: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
+  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
+  onBrowserMediaRequest: vi.fn(), onProgress: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
   resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(),
 }));
 
 const job = {
   id: '26ee8ee4-bff2-4740-a014-9815157f42f9', url: 'https://example.com/file.bin',
   destination: '/Downloads/file.bin', fileName: 'file.bin', state: 'queued' as const,
+  kind: 'file' as const,
   totalBytes: 1024, downloadedBytes: 0, speedBytesPerSecond: 0, etaSeconds: null,
   segments: 4, etag: '"v1"', lastModified: null, sha256: null, error: null,
   createdAt: 1, updatedAt: 1,
@@ -25,10 +26,16 @@ describe('App', () => {
   beforeEach(() => {
     vi.mocked(checkBackend).mockResolvedValue({ appName: 'GrabBit', version: '0.1.0', status: 'ok' });
     vi.mocked(listDownloads).mockResolvedValue([job]);
-    vi.mocked(getSettings).mockResolvedValue({ maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '/Downloads', theme: 'system' });
+    vi.mocked(getSettings).mockResolvedValue({ maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '/Downloads', theme: 'system', browserCaptureEnabled: true, browserAutomaticInterception: false, browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' });
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
+    vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
     vi.mocked(probeUrl).mockResolvedValue({ finalUrl: job.url, fileName: job.fileName, contentLength: 1024, supportsRanges: true, etag: '"v1"', lastModified: null, contentType: 'application/octet-stream' });
     vi.mocked(addDownload).mockResolvedValue(job);
+    vi.mocked(inspectMedia).mockResolvedValue({ sourceUrl: 'https://media.example/watch/1', website: 'Generic', title: 'Licensed sample', thumbnailUrl: null, durationSeconds: 30, availability: 'public', restrictionReason: null, subtitles: [], formats: [
+      { id: 'v720', extension: 'mp4', container: 'mp4', width: 1280, height: 720, frameRate: 30, videoCodec: 'avc1', audioCodec: null, audioBitrateKbps: null, estimatedBytes: 2048, hasVideo: true, hasAudio: false },
+      { id: 'a128', extension: 'm4a', container: 'm4a', width: null, height: null, frameRate: null, videoCodec: null, audioCodec: 'mp4a', audioBitrateKbps: 128, estimatedBytes: 512, hasVideo: false, hasAudio: true },
+    ] });
+    vi.mocked(createMediaDownload).mockResolvedValue({ ...job, id: 'media-job', fileName: 'Licensed sample.mp4', kind: 'media' });
   });
 
   it('loads the real backend-facing queue contract', async () => {
@@ -47,6 +54,18 @@ describe('App', () => {
     expect(probeUrl).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'Start Download' }));
     await waitFor(() => expect(addDownload).toHaveBeenCalledWith({ url: job.url, destinationDirectory: '/Downloads', segments: 4, sha256: undefined }));
+  });
+
+  it('lists real media formats and creates the selected media job', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Media' }));
+    fireEvent.change(screen.getByPlaceholderText('https://media.example/watch/…'), { target: { value: 'https://media.example/watch/1' } });
+    fireEvent.click(screen.getByText(/I own this media/));
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect available formats' }));
+    expect(await screen.findByText('Licensed sample')).toBeVisible();
+    expect(screen.getByRole('option', { name: /720p 30fps/ })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Start media download' }));
+    await waitFor(() => expect(createMediaDownload).toHaveBeenCalledWith(expect.objectContaining({ formatIds: ['v720', 'a128'], output: 'mp4', authorizationConfirmed: true })));
   });
 
   it('shows the branded About screen', async () => {

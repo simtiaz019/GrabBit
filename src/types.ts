@@ -8,6 +8,9 @@ export type DownloadState =
   | 'queued'
   | 'inspecting'
   | 'downloading'
+  | 'merging'
+  | 'converting'
+  | 'verifying'
   | 'paused'
   | 'completed'
   | 'failed'
@@ -28,6 +31,7 @@ export interface DownloadJob {
   url: string;
   destination: string;
   fileName: string;
+  kind: 'file' | 'media';
   state: DownloadState;
   totalBytes: number | null;
   downloadedBytes: number;
@@ -58,4 +62,39 @@ export interface AppSettings {
   defaultSegments: number;
   defaultDownloadDirectory: string;
   theme: Theme;
+  browserCaptureEnabled: boolean;
+  browserAutomaticInterception: boolean;
+  browserExcludedSites: string[];
+  ytDlpPath: string;
+  ffmpegPath: string;
+  ffprobePath: string;
 }
+
+export interface MediaFormat {
+  id: string;
+  extension: string | null;
+  container: string | null;
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  audioBitrateKbps: number | null;
+  estimatedBytes: number | null;
+  hasVideo: boolean;
+  hasAudio: boolean;
+}
+
+export interface MediaInspection {
+  sourceUrl: string;
+  website: string | null;
+  title: string;
+  thumbnailUrl: string | null;
+  durationSeconds: number | null;
+  availability: 'public' | 'login_required' | 'drm_protected' | 'unavailable' | 'unknown';
+  restrictionReason: string | null;
+  formats: MediaFormat[];
+  subtitles: Array<{ language: string; name: string | null; extensions: string[] }>;
+}
+
+export type MediaOutput = 'original' | 'mp4' | 'webm' | 'mkv' | 'mp3' | 'm4a' | 'aac' | 'opus' | 'flac' | 'wav';

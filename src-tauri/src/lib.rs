@@ -1,3 +1,4 @@
+mod browser_ipc;
 mod commands;
 
 use download_core::DownloadService;
@@ -24,6 +25,12 @@ pub fn run() {
                 .map_err(|error| error.to_string())?;
             let service = tauri::async_runtime::block_on(DownloadService::open(&data_directory))
                 .map_err(|error| error.to_string())?;
+            let ipc_service = service.clone();
+            let ipc_directory = data_directory.clone();
+            let ipc_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                browser_ipc::serve(ipc_service, &ipc_directory, ipc_handle).await;
+            });
             let mut settings = tauri::async_runtime::block_on(service.settings())
                 .map_err(|error| error.to_string())?;
             if settings.default_download_directory.trim().is_empty()
@@ -58,6 +65,9 @@ pub fn run() {
             commands::remove_download,
             commands::get_settings,
             commands::save_settings,
+            commands::inspect_media,
+            commands::media_capabilities,
+            commands::create_media_download,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run GrabBit desktop application");

@@ -1,9 +1,11 @@
 [workspace]
 members = [
+  "crates/browser-native-host",
   "crates/download-common",
   "crates/download-core",
   "crates/http-engine",
   "crates/download-storage",
+  "crates/media-engine",
   "src-tauri",
 ]
 resolver = "3"
@@ -19,16 +21,18 @@ async-trait = "0.1.89"
 futures-util = "0.3.31"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 sha2 = "0.10.9"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tauri = "2.12.5"
 tauri-build = "2.7.4"
 tauri-plugin-dialog = "2.8.4"
 thiserror = "2.0.17"
-tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
+url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 
 [workspace.lints.rust]

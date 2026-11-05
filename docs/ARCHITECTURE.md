@@ -11,6 +11,9 @@ React UI -> Tauri commands -> download-core
                     http-engine       download-storage
                               \           /
                               download-common
+
+Browser extension -> Native Messaging host -> per-user IPC -> Tauri adapter
+Tauri commands -> download-core -> media-engine -> yt-dlp / FFmpeg / FFprobe
 ```
 
 - `download-common`: serializable domain types, errors, and state rules.
@@ -21,6 +24,10 @@ React UI -> Tauri commands -> download-core
   durable storage, and destination policy.
 - `src-tauri`: narrow, typed commands adapting the UI to application services.
 - `src`: React views and bridge wrappers; no independent download engine.
+- `browser-native-host`: bounded native framing, extension identity checks, and
+  forwarding only; it cannot write download payloads or execute arbitrary tools.
+- `media-engine`: Tauri-independent inspection and media-tool process adapter;
+  `download-core` retains queue, destination, and finalization policy.
 
 ## Trust boundaries
 

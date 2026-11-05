@@ -22,8 +22,14 @@ and installations are not migrated.
 - Optional SHA-256 verification and non-overwriting finalization
 - Live progress, speed, ETA, filters, details, settings, and light/dark themes
 - Windows, macOS, and Linux CI/release configuration
+- Secure native-messaging capture for Chromium-family browsers and Firefox
+- Authorized, non-DRM media inspection through configured yt-dlp/FFmpeg tools
+- Real source-format selection, audio extraction, remux/conversion, and media job recovery
 
-Torrents, browser extensions, and multi-network aggregation are outside Phase 1.
+GrabBit never captures cookies or authorization headers and does not bypass DRM,
+paywalls, or access controls. Media downloads are for content the user owns or
+is authorized to download. Torrents and multi-network aggregation remain out of
+scope.
 
 ## Run
 
@@ -65,3 +71,6 @@ npm run tauri build
 See [installation and packaging](docs/INSTALLATION.md),
 [architecture](docs/ARCHITECTURE.md), and
 [recovery guarantees](docs/adr/0002-transfer-recovery-and-finalization.md).
+
+Phase 2 implementation status, browser support, and honest platform limitations
+are tracked in [the Phase 2 audit](docs/PHASE2_AUDIT.md).

@@ -1,0 +1,7 @@
+{
+  "name": "com.grabbit.native",
+  "description": "GrabBit secure browser bridge",
+  "path": "__GRABBIT_BROWSER_HOST__",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://hdfipadppabbjkbbodcdhjelmiifamjj/"]
+}

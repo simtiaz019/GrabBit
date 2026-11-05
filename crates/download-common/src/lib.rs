@@ -12,6 +12,9 @@ pub enum DownloadState {
     Queued,
     Inspecting,
     Downloading,
+    Merging,
+    Converting,
+    Verifying,
     Paused,
     Completed,
     Failed,
@@ -42,7 +45,21 @@ impl DownloadState {
                 )
                 | (
                     Self::Downloading,
-                    Self::Paused | Self::Completed | Self::Failed | Self::Cancelled
+                    Self::Paused
+                        | Self::Merging
+                        | Self::Converting
+                        | Self::Verifying
+                        | Self::Completed
+                        | Self::Failed
+                        | Self::Cancelled
+                )
+                | (
+                    Self::Merging | Self::Converting,
+                    Self::Verifying | Self::Failed | Self::Cancelled
+                )
+                | (
+                    Self::Verifying,
+                    Self::Completed | Self::Failed | Self::Cancelled
                 )
                 | (Self::Paused | Self::Failed, Self::Queued | Self::Cancelled)
         );
@@ -94,6 +111,7 @@ pub struct DownloadJob {
     pub url: String,
     pub destination: String,
     pub file_name: String,
+    pub kind: DownloadKind,
     pub state: DownloadState,
     pub total_bytes: Option<u64>,
     pub downloaded_bytes: u64,
@@ -108,6 +126,13 @@ pub struct DownloadJob {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadKind {
+    File,
+    Media,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -115,6 +140,12 @@ pub struct AppSettings {
     pub default_segments: u8,
     pub default_download_directory: String,
     pub theme: Theme,
+    pub browser_capture_enabled: bool,
+    pub browser_automatic_interception: bool,
+    pub browser_excluded_sites: Vec<String>,
+    pub yt_dlp_path: String,
+    pub ffmpeg_path: String,
+    pub ffprobe_path: String,
 }
 
 impl Default for AppSettings {
@@ -124,6 +155,12 @@ impl Default for AppSettings {
             default_segments: 4,
             default_download_directory: String::new(),
             theme: Theme::System,
+            browser_capture_enabled: true,
+            browser_automatic_interception: false,
+            browser_excluded_sites: Vec::new(),
+            yt_dlp_path: String::new(),
+            ffmpeg_path: String::new(),
+            ffprobe_path: String::new(),
         }
     }
 }

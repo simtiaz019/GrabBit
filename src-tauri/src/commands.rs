@@ -1,8 +1,13 @@
 use std::{path::PathBuf, sync::Arc};
 
 use download_common::{AppSettings, DownloadJob, HealthResponse, HealthStatus, RemoteMetadata};
-use download_core::{AddDownloadRequest, DownloadService};
+use download_core::{AddDownloadRequest, AddMediaRequest, DownloadService};
+use media_engine::{
+    InspectRequest, MediaInspection, MediaInspector, MediaOutput, ToolCapabilities, ToolConfig,
+    YtDlpAdapter,
+};
 use tauri::State;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[tauri::command]
@@ -101,6 +106,76 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     service
         .save_settings(settings)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn media_adapter(settings: &AppSettings) -> Result<YtDlpAdapter, String> {
+    YtDlpAdapter::new(ToolConfig::from_paths(
+        PathBuf::from(&settings.yt_dlp_path),
+        PathBuf::from(&settings.ffmpeg_path),
+        PathBuf::from(&settings.ffprobe_path),
+    ))
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn inspect_media(
+    service: State<'_, Arc<DownloadService>>,
+    url: String,
+    authorization_confirmed: bool,
+) -> Result<MediaInspection, String> {
+    let adapter = media_adapter(
+        &service
+            .settings()
+            .await
+            .map_err(|error| error.to_string())?,
+    )?;
+    adapter
+        .inspect(
+            &InspectRequest {
+                url,
+                authorization_confirmed,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn media_capabilities(
+    service: State<'_, Arc<DownloadService>>,
+) -> Result<ToolCapabilities, String> {
+    let adapter = media_adapter(
+        &service
+            .settings()
+            .await
+            .map_err(|error| error.to_string())?,
+    )?;
+    adapter
+        .capabilities()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_media_download(
+    service: State<'_, Arc<DownloadService>>,
+    url: String,
+    destination_directory: String,
+    format_ids: Vec<String>,
+    output: MediaOutput,
+    authorization_confirmed: bool,
+) -> Result<DownloadJob, String> {
+    service
+        .add_media(AddMediaRequest {
+            url,
+            destination_directory: PathBuf::from(destination_directory),
+            format_ids,
+            output,
+            authorization_confirmed,
+        })
         .await
         .map_err(|error| error.to_string())
 }

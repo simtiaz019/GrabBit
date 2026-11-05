@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "GrabBit Browser Integration",
+  "version": "0.1.0",
+  "description": "Send authorized HTTP/HTTPS downloads and media pages to GrabBit.",
+  "permissions": ["nativeMessaging", "downloads", "contextMenus", "storage", "activeTab"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "scripts": ["background.js"], "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "GrabBit" },
+  "browser_specific_settings": { "gecko": { "id": "grabbit@grabbit.download", "strict_min_version": "128.0" } }
+}

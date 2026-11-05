@@ -19,7 +19,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run extension:typecheck
       - run: npm test
+      - run: npm run extension:build
       - run: npm run build
 
   rust:

@@ -13,12 +13,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build.workspace = true
 
 [dependencies]
+browser-native-host = { path = "../crates/browser-native-host" }
 download-common = { path = "../crates/download-common" }
 download-core = { path = "../crates/download-core" }
+media-engine = { path = "../crates/media-engine" }
 serde.workspace = true
+serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
