@@ -3,7 +3,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist', 'node_modules', 'target'] },
+  { ignores: ['**/dist', 'safari/Resources', 'node_modules', 'target'] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {

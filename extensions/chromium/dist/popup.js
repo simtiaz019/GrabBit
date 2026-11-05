@@ -1,5 +1,5 @@
-import { api, capture as captureDownload, native, policy } from './native-client';
-import { isEligibleUrl } from './policy';
+import { api, capture as captureDownload, native, policy } from './native-client.js';
+import { isEligibleUrl } from './policy.js';
 const status = document.querySelector('#status');
 const enabled = document.querySelector('#enabled');
 const automatic = document.querySelector('#automatic');

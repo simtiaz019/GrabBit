@@ -1,12 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { addDownload, cancelDownload, checkBackend, createMediaDownload, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload, retryDownload, saveSettings } from './bridge';
+import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload, retryDownload, saveSettings } from './bridge';
 import type { ProgressSnapshot } from './types';
 
 vi.mock('./bridge', () => ({
   addDownload: vi.fn(), cancelDownload: vi.fn(), checkBackend: vi.fn(),
-  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
+  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getBrowserDiagnostics: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
   onBrowserMediaRequest: vi.fn(), onProgress: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
   resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(),
 }));
@@ -27,6 +27,7 @@ describe('App', () => {
     vi.mocked(checkBackend).mockResolvedValue({ appName: 'GrabBit', version: '0.1.0', status: 'ok' });
     vi.mocked(listDownloads).mockResolvedValue([job]);
     vi.mocked(getSettings).mockResolvedValue({ maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '/Downloads', theme: 'system', browserCaptureEnabled: true, browserAutomaticInterception: false, browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' });
+    vi.mocked(getBrowserDiagnostics).mockResolvedValue({ platform: 'macos', ipcAvailable: true, nativeHostRegistered: true, manifestLocations: ['/manifest.json'], extensionConnected: false, lastConnectionAt: null, lastError: null });
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
     vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
     vi.mocked(probeUrl).mockResolvedValue({ finalUrl: job.url, fileName: job.fileName, contentLength: 1024, supportsRanges: true, etag: '"v1"', lastModified: null, contentType: 'application/octet-stream' });

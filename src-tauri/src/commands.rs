@@ -1,12 +1,13 @@
 use std::{path::PathBuf, sync::Arc};
 
+use base64::Engine;
 use download_common::{AppSettings, DownloadJob, HealthResponse, HealthStatus, RemoteMetadata};
 use download_core::{AddDownloadRequest, AddMediaRequest, DownloadService};
 use media_engine::{
     InspectRequest, MediaInspection, MediaInspector, MediaOutput, ToolCapabilities, ToolConfig,
-    YtDlpAdapter,
+    YtDlpAdapter, fetch_secure_thumbnail,
 };
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -131,7 +132,7 @@ pub async fn inspect_media(
             .await
             .map_err(|error| error.to_string())?,
     )?;
-    adapter
+    let mut inspection = adapter
         .inspect(
             &InspectRequest {
                 url,
@@ -140,7 +141,19 @@ pub async fn inspect_media(
             CancellationToken::new(),
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    inspection.thumbnail_url = if let Some(url) = inspection.thumbnail_url.as_deref() {
+        fetch_secure_thumbnail(url).await.ok().map(|thumbnail| {
+            format!(
+                "data:{};base64,{}",
+                thumbnail.content_type,
+                base64::engine::general_purpose::STANDARD.encode(thumbnail.bytes)
+            )
+        })
+    } else {
+        None
+    };
+    Ok(inspection)
 }
 
 #[tauri::command]
@@ -178,6 +191,19 @@ pub async fn create_media_download(
         })
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_browser_diagnostics(
+    app: AppHandle,
+) -> Result<crate::browser_ipc::BrowserDiagnostics, String> {
+    let data_directory = std::env::var_os("GRABBIT_DATA_DIRECTORY")
+        .map(PathBuf::from)
+        .map_or_else(
+            || app.path().app_data_dir().map_err(|error| error.to_string()),
+            Ok,
+        )?;
+    Ok(crate::browser_ipc::diagnostics(&data_directory))
 }
 
 #[cfg(test)]

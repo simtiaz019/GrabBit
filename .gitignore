@@ -4,6 +4,7 @@
 /.vite
 *.tsbuildinfo
 /src-tauri/gen
+/safari/Resources
 *.log
 .DS_Store
 

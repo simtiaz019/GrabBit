@@ -14,6 +14,7 @@ tauri-build.workspace = true
 
 [dependencies]
 browser-native-host = { path = "../crates/browser-native-host" }
+base64.workspace = true
 download-common = { path = "../crates/download-common" }
 download-core = { path = "../crates/download-core" }
 media-engine = { path = "../crates/media-engine" }

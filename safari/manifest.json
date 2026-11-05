@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "GrabBit Browser Integration",
+  "version": "0.1.0",
+  "description": "Send authorized HTTP/HTTPS downloads and media pages to GrabBit.",
+  "permissions": ["nativeMessaging", "downloads", "contextMenus", "storage", "activeTab"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "GrabBit" }
+}

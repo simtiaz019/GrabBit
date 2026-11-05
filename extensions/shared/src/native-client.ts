@@ -1,5 +1,5 @@
-import { envelope, NATIVE_HOST, type BrowserKind, type NativeResponse } from './contracts';
-import { isEligibleUrl, type CapturePolicy } from './policy';
+import { envelope, NATIVE_HOST, type BrowserKind, type NativeResponse } from './contracts.js';
+import { isEligibleUrl, type CapturePolicy } from './policy.js';
 
 export const api: WebExt.Api = typeof browser !== 'undefined' ? browser : chrome;
 const DEFAULT_POLICY: CapturePolicy = { enabled: true, automatic: false, excludedSites: [] };

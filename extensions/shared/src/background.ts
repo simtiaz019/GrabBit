@@ -1,5 +1,5 @@
-import { api, capture, native, policy } from './native-client';
-import { isEligibleUrl, shouldIntercept } from './policy';
+import { api, capture, native, policy } from './native-client.js';
+import { isEligibleUrl, shouldIntercept } from './policy.js';
 
 const recentlyCaptured = new Map<string, number>();
 

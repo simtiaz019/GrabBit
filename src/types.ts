@@ -98,3 +98,13 @@ export interface MediaInspection {
 }
 
 export type MediaOutput = 'original' | 'mp4' | 'webm' | 'mkv' | 'mp3' | 'm4a' | 'aac' | 'opus' | 'flac' | 'wav';
+
+export interface BrowserDiagnostics {
+  platform: string;
+  ipcAvailable: boolean;
+  nativeHostRegistered: boolean;
+  manifestLocations: string[];
+  extensionConnected: boolean;
+  lastConnectionAt: number | null;
+  lastError: string | null;
+}

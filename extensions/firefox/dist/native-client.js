@@ -1,5 +1,5 @@
-import { envelope, NATIVE_HOST } from './contracts';
-import { isEligibleUrl } from './policy';
+import { envelope, NATIVE_HOST } from './contracts.js';
+import { isEligibleUrl } from './policy.js';
 export const api = typeof browser !== 'undefined' ? browser : chrome;
 const DEFAULT_POLICY = { enabled: true, automatic: false, excludedSites: [] };
 function browserKind() {

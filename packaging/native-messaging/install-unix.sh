@@ -31,11 +31,20 @@ install -m 0755 "$host_source" "$install_root/grabbit-browser-host"
 escaped_host=$(printf '%s' "$install_root/grabbit-browser-host" | sed 's/[&/]/\\&/g')
 
 printf '%s\n' "$chromium_roots" | while IFS= read -r root; do
-  mkdir -p "$root"
-  sed "s/__GRABBIT_BROWSER_HOST__/$escaped_host/" "$repo_root/packaging/native-messaging/chromium/com.grabbit.native.json" > "$root/com.grabbit.native.json"
+  if ! mkdir -p "$root"; then
+    echo "Warning: could not create native-host directory: $root" >&2
+    continue
+  fi
+  if ! sed "s/__GRABBIT_BROWSER_HOST__/$escaped_host/" "$repo_root/packaging/native-messaging/chromium/com.grabbit.native.json" > "$root/com.grabbit.native.json"; then
+    echo "Warning: could not install native-host manifest: $root" >&2
+    continue
+  fi
   chmod 0644 "$root/com.grabbit.native.json"
 done
-mkdir -p "$firefox_root"
-sed "s/__GRABBIT_BROWSER_HOST__/$escaped_host/" "$repo_root/packaging/native-messaging/firefox/com.grabbit.native.json" > "$firefox_root/com.grabbit.native.json"
-chmod 0644 "$firefox_root/com.grabbit.native.json"
+if mkdir -p "$firefox_root"; then
+  sed "s/__GRABBIT_BROWSER_HOST__/$escaped_host/" "$repo_root/packaging/native-messaging/firefox/com.grabbit.native.json" > "$firefox_root/com.grabbit.native.json"
+  chmod 0644 "$firefox_root/com.grabbit.native.json"
+else
+  echo "Warning: could not create native-host directory: $firefox_root" >&2
+fi
 echo "Installed GrabBit native host. Load the extension from extensions/chromium/dist or extensions/firefox/dist."
