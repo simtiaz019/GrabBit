@@ -25,6 +25,14 @@ talk only to the native messaging host. The host authenticates the extension
 identity, validates and bounds a shared request envelope, then forwards it over
 the user-scoped IPC channel. It never accepts commands or arbitrary paths.
 
+Automatic browser capture uses one desktop-owned `off` / `ask` / `automatic`
+setting. The extension asks the desktop for that setting for every interception
+decision and fails closed when GrabBit is unavailable. Chrome reports an
+absolute destination in `DownloadItem.filename`; the extension reduces that
+untrusted value to a basename before sending it through the native protocol.
+This avoids the protocol path-separator rejection that previously prevented
+automatic captures even though manual URL captures worked.
+
 Media inspection/execution is isolated in `media-engine`. It invokes configured
 `yt-dlp`, FFmpeg, and FFprobe executables directly with argument arrays, a
 cleared environment, bounded output, cancellation, and timeouts. It does not
@@ -57,8 +65,8 @@ The checklist is updated only after implementation and relevant checks.
 
 | Browser | Extension build | Native manifest | Desktop IPC | Real browser smoke test (2026-11-05) |
 | --- | --- | --- | --- | --- |
-| Brave 155, macOS | Pass | Pass | Pass | **Pass:** pong, durable 8 MiB capture, duplicate acknowledgement, app-unavailable response, browser restart, and desktop restart |
-| Google Chrome 156, macOS | Pass | Pass | Pass independently | **Blocked:** the installed production build ignores command-line unpacked-extension loading; no false smoke claim |
+| Brave 155, macOS | Pass | Pass | Pass | **Pass:** packaged extension/host, automatic cancellation, Ask choices, exclusions, redirect/ISO, Content-Disposition, unknown length, duplicate prevention, cancellation-failure diagnostics, app-unavailable fallback, and browser/desktop restarts |
+| Google Chrome 156, macOS | Pass | Pass | Pass independently | **Blocked:** final isolated-profile run ignored the requested unpacked extension and opened its URL as `chrome-error://chromewebdata/`; the unrelated installed extension was the only service worker. The user's manually loaded extension connects, but the live profile was not modified or stopped |
 | Google Chrome for Testing 157, macOS | Pass; service worker starts | Requires `/Library/Google/ChromeForTesting`, which needs administrator access | Not reached | **Blocked:** test browser does not read the per-user production Chrome manifest |
 | Edge, macOS | Pass | Installer tolerates absent browser | Pass by shared Chromium path | Not run: browser unavailable |
 | Firefox, macOS | Pass | Pass | Pass by shared Unix path | Not run: browser unavailable |
@@ -66,11 +74,11 @@ The checklist is updated only after implementation and relevant checks.
 | Chromium family / Firefox, Windows | Pass | Pass | Implemented with a random capability pipe, remote-client rejection, bounded messages, and timeouts | Not run: Windows environment unavailable |
 | Safari | Resources, manifest, Swift handler, state helper, and entitlements prepared | Xcode signing required | App-group request/reply path implemented | Not run: full Xcode and signing credentials unavailable |
 
-The Brave smoke test exercises the final release native host and final extension
-origin allowlist. Automatic interception and context-menu UI still require an
-interactive browser permission/UI gesture: the optional all-sites permission is
-deliberately not pre-granted or bypassed by the test harness. Their policy and
-acknowledgement behavior remain covered by deterministic extension tests.
+The Brave smoke test launches the packaged desktop executable and loads the
+extension that executable copied from its app-bundle resources into the stable
+application-support directory. It therefore covers the release resource sync,
+final native host, extension origin allowlist, and real `downloads.onCreated`
+interception rather than only issuing protocol messages from a test client.
 
 Automatic capture cannot reliably reproduce POST downloads, blob URLs,
 browser-internal pages, service-worker-private requests, or authenticated
@@ -88,20 +96,26 @@ Successfully run on macOS arm64 on 2026-11-05:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo test --workspace --all-targets --all-features` (33 tests, including two real FFmpeg/FFprobe integration tests)
+- `cargo test --workspace --all-targets --all-features` (35 tests, including two real FFmpeg/FFprobe integration tests)
 - `cargo check --workspace --all-targets --all-features`
 - `cargo check --target x86_64-pc-windows-msvc -p browser-native-host --all-targets`
 - `npm run lint`
 - `npm run typecheck`
 - `npm run extension:typecheck`
-- `npm test` (21 tests)
+- `npm test -- --run` (23 tests)
 - `npm run extension:build`
 - `npm run build`
 - `cargo build --release --bin grabbit-browser-host`
 - `./safari/prepare-resources.sh`, plist/entitlement validation, and `swiftc -parse` for both Swift sources
-- native-host framing and Brave browser smoke tests (approved origin, durable capture, duplicate handling, unavailable response, and restarts)
+- final packaged-resource Brave integration (automatic capture/cancellation,
+  Ask Every Time choices, site exclusion, redirect/ISO naming, query URLs,
+  Content-Disposition, absent Content-Length, duplicate prevention, cancellation
+  failure, app-unavailable fallback, and browser/desktop restarts)
+- a bounded 1 KiB HTTP range request against the official CentOS Stream 9
+  mirror redirect, which returned `206 Partial Content` from the selected mirror
 - `npm run tauri build` (ad-hoc signed `.app` and `.dmg`; notarization skipped
   because Apple credentials were unavailable)
+- `codesign --verify --deep --strict` for the app and `hdiutil verify` for the DMG
 
 The media fixture test generates and probes MP4, WebM, M4A, Opus, split
 audio/video, merged output, HLS, and DASH locally. It also verifies SHA-256

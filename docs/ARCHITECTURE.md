@@ -51,7 +51,9 @@ The Tauri adapter initializes one `DownloadService`, which opens SQLite,
 reconciles interrupted jobs, and owns a bounded global scheduler. Purpose-built
 commands probe URLs, create jobs, and change lifecycle state. The service emits
 throttled progress snapshots; React renders them but never handles payloads.
-
+Browser capture uses one SQLite-backed `off` / `ask` / `automatic` mode.
+Extensions read and update that setting through the native host and fail closed
+when the desktop IPC service is unavailable.
 `http-engine` probes with HEAD and a ranged GET fallback. Transfers use bounded
 stream chunks, validated HTTP 206 ranges, up to 32 segments, per-segment
 retries, and cancellation tokens. `download-core` owns partial paths, resource
@@ -62,4 +64,3 @@ SQLite stores queue/history/settings and crash-recovery state.
 
 Only bytes flushed and synchronized to disk may advance a durable checkpoint.
 See ADR-0002 for pause, validator, preallocation, and finalization behavior.
-

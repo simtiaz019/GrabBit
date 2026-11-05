@@ -56,12 +56,29 @@ install per-user manifests for Chrome, Brave, Edge, and Firefox; they do not
 require an unauthenticated HTTP listener. Load the unpacked extension from
 `extensions/chromium/dist` or `extensions/firefox/dist` during development.
 
-Automatic interception is off by default. The browser transfer is cancelled
-only after GrabBit reports that a queue job was durably created. Browser API
+Capture mode is persisted by GrabBit and can be changed in **Settings > Browser
+integration** or the extension popup. Both use the same setting through the
+native host; the extension does not use a separate cached capture preference.
+Choose **Off**, **Ask every time**, or **Automatic**. The browser transfer is
+cancelled only after GrabBit reports that a queue job was durably created.
+Browser API
 timing means some downloads that start from browser-internal pages, blobs,
 service workers, or POST requests cannot be captured reliably; those downloads
 remain in the browser. GrabBit does not forward cookies, authentication headers,
 or request bodies.
+
+The app bundle includes current Chromium and Firefox unpacked extension files.
+On launch, GrabBit refreshes them at
+`~/Library/Application Support/com.grabbit.desktop/browser-extensions/` and
+updates the native-messaging host at
+`~/Library/Application Support/GrabBit/grabbit-browser-host`. For a packaged
+macOS install, use the `chromium` or `firefox` directory there with the
+browser's **Load unpacked** command. After replacing GrabBit with a newer DMG,
+reload the unpacked extension in the browser's extension manager (or restart
+the browser) so it reads the updated files. Extensions loaded from a repository
+or another directory are not modified by the DMG; migrate those once to the
+stable application-support location. Development installs may continue to load
+from `extensions/chromium/dist` or `extensions/firefox/dist`.
 
 The desktop IPC transport uses a mode-0600 Unix socket on macOS/Linux. Windows
 uses a random current-user capability pipe recorded under the user's app-data
@@ -93,4 +110,3 @@ downloading is not permitted.
 Safari requires the signed containing-app workflow documented in
 `safari/README.md`. A normal unsigned Tauri build cannot distribute or verify a
 Safari Web Extension.
-
