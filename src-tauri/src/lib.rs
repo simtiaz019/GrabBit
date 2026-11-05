@@ -1,7 +1,9 @@
 mod browser_ipc;
 mod commands;
 
+use download_common::BrowserCaptureMode;
 use download_core::DownloadService;
+use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -25,6 +27,14 @@ pub fn run() {
                     || app.path().app_data_dir().map_err(|error| error.to_string()),
                     Ok,
                 )?;
+            let resource_directory = app
+                .path()
+                .resource_dir()
+                .map_err(|error| error.to_string())?;
+            let extension_directory = data_directory.join("browser-extensions");
+            sync_browser_extensions(&resource_directory, &extension_directory)
+                .map_err(|error| error.to_string())?;
+            sync_browser_native_host(&resource_directory).map_err(|error| error.to_string())?;
             let service = tauri::async_runtime::block_on(DownloadService::open(&data_directory))
                 .map_err(|error| error.to_string())?;
             let ipc_service = service.clone();
@@ -48,7 +58,7 @@ pub fn run() {
             if std::env::var_os("GRABBIT_ENABLE_AUTOMATIC_CAPTURE").as_deref()
                 == Some(std::ffi::OsStr::new("1"))
             {
-                settings.browser_automatic_interception = true;
+                settings.browser_capture_mode = BrowserCaptureMode::Automatic;
             }
             tauri::async_runtime::block_on(service.save_settings(settings))
                 .map_err(|error| error.to_string())?;
@@ -92,4 +102,93 @@ pub fn run() {
                 tauri::async_runtime::block_on(service.shutdown());
             }
         });
+}
+
+fn sync_browser_extensions(resources: &Path, destination: &Path) -> std::io::Result<()> {
+    for browser in ["chromium", "firefox"] {
+        let source = resources.join("browser-extensions").join(browser);
+        if !source.is_dir() {
+            tracing::warn!(path = %source.display(), "packaged browser extension resources are unavailable; skipping update");
+            continue;
+        }
+        copy_extension_directory(&source, &destination.join(browser))?;
+    }
+    Ok(())
+}
+
+fn sync_browser_native_host(resources: &Path) -> std::io::Result<()> {
+    let executable = if cfg!(windows) {
+        "grabbit-browser-host.exe"
+    } else {
+        "grabbit-browser-host"
+    };
+    let source = resources.join("browser-native-host").join(executable);
+    if !source.is_file() {
+        tracing::warn!(path = %source.display(), "packaged browser native host is unavailable; skipping update");
+        return Ok(());
+    }
+
+    let install_directory = native_host_install_directory()?;
+    std::fs::create_dir_all(&install_directory)?;
+    let destination = install_directory.join(executable);
+    std::fs::copy(source, &destination)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn native_host_install_directory() -> std::io::Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| std::io::Error::other("home directory is unavailable"))?;
+    Ok(home.join("Library/Application Support/GrabBit"))
+}
+
+#[cfg(target_os = "linux")]
+fn native_host_install_directory() -> std::io::Result<PathBuf> {
+    let data_directory = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .ok_or_else(|| std::io::Error::other("user data directory is unavailable"))?;
+    Ok(data_directory.join("grabbit"))
+}
+
+#[cfg(target_os = "windows")]
+fn native_host_install_directory() -> std::io::Result<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|directory| directory.join("GrabBit"))
+        .ok_or_else(|| std::io::Error::other("local application data directory is unavailable"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn native_host_install_directory() -> std::io::Result<PathBuf> {
+    Err(std::io::Error::other(
+        "browser native host is unsupported on this platform",
+    ))
+}
+
+fn copy_extension_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_extension_directory(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(source_path, destination_path)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "browser extension resources may contain only files and directories",
+            ));
+        }
+    }
+    Ok(())
 }

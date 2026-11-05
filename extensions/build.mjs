@@ -1,10 +1,27 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new globalThis.URL('.', import.meta.url));
 execFileSync(join(root, '..', 'node_modules', '.bin', 'tsc'), ['-p', join(root, 'tsconfig.json')], { stdio: 'inherit' });
+async function validateModuleSpecifiers(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await validateModuleSpecifiers(path);
+    } else if (entry.isFile() && path.endsWith('.js')) {
+      const source = await readFile(path, 'utf8');
+      for (const [, specifier] of source.matchAll(/^\s*import(?:\s+[^'"]+\s+from\s+)?\s*['"]([^'"]+)['"]/gmu)) {
+        if (!specifier.startsWith('./') || !specifier.endsWith('.js')) {
+          throw new Error(`Invalid extension module specifier "${specifier}" in ${path}`);
+        }
+        await readFile(resolve(dirname(path), specifier));
+      }
+    }
+  }
+}
+await validateModuleSpecifiers(join(root, '.build'));
 for (const browser of ['chromium', 'firefox']) {
   const dist = join(root, browser, 'dist');
   await rm(dist, { recursive: true, force: true });
@@ -12,6 +29,9 @@ for (const browser of ['chromium', 'firefox']) {
   await cp(join(root, '.build'), dist, { recursive: true });
   await cp(join(root, 'shared', 'popup.html'), join(dist, 'popup.html'));
   await cp(join(root, 'shared', 'popup.css'), join(dist, 'popup.css'));
+  await cp(join(root, 'shared', 'confirm.html'), join(dist, 'confirm.html'));
+  await cp(join(root, 'shared', 'confirm.css'), join(dist, 'confirm.css'));
+  await cp(join(root, '..', 'public', 'branding', 'logo-icon.png'), join(dist, 'icon.png'));
   await cp(join(root, browser, 'manifest.json'), join(dist, 'manifest.json'));
 }
 await rm(join(root, '.build'), { recursive: true, force: true });

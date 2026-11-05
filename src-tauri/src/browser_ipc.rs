@@ -114,7 +114,8 @@ use std::{
 };
 
 use browser_native_host::{
-    BrowserRequest, RequestEnvelope, ResponseCode, ResponseEnvelope, SCHEMA_VERSION,
+    BrowserCaptureMode, BrowserRequest, CaptureDiagnosticsReport, RequestEnvelope, ResponseCode,
+    ResponseEnvelope, SCHEMA_VERSION,
 };
 use download_core::{BrowserCaptureRequest, BrowserCaptureResult, DownloadService};
 use serde_json::json;
@@ -130,12 +131,26 @@ pub struct BrowserDiagnostics {
     pub extension_connected: bool,
     pub last_connection_at: Option<u64>,
     pub last_error: Option<String>,
+    pub automatic_interception_enabled: Option<bool>,
+    pub downloads_permission_granted: Option<bool>,
+    pub last_download_event_at: Option<u64>,
+    pub last_url_hostname: Option<String>,
+    pub capture_decision: Option<String>,
+    pub job_acceptance_status: Option<String>,
+    pub chrome_cancellation_result: Option<String>,
 }
 
 #[derive(Debug, Default)]
 struct RuntimeStatus {
     last_connection_at: Option<u64>,
     last_error: Option<String>,
+    automatic_interception_enabled: Option<bool>,
+    downloads_permission_granted: Option<bool>,
+    last_download_event_at: Option<u64>,
+    last_url_hostname: Option<String>,
+    capture_decision: Option<String>,
+    job_acceptance_status: Option<String>,
+    chrome_cancellation_result: Option<String>,
 }
 
 static RUNTIME_STATUS: LazyLock<Mutex<RuntimeStatus>> =
@@ -157,6 +172,23 @@ fn record_error(message: &str) {
     }
 }
 
+fn record_capture_diagnostics(report: CaptureDiagnosticsReport) {
+    if let Ok(mut status) = RUNTIME_STATUS.lock() {
+        status.last_connection_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs());
+        status.automatic_interception_enabled = Some(report.automatic_enabled);
+        status.downloads_permission_granted = Some(report.downloads_permission_granted);
+        status.last_download_event_at = report.last_event_at;
+        status.last_url_hostname = report.last_hostname;
+        status.capture_decision = Some(report.decision);
+        status.job_acceptance_status = Some(report.job_acceptance);
+        status.chrome_cancellation_result = Some(report.cancellation_result);
+        status.last_error = report.last_error;
+    }
+}
+
 pub fn diagnostics(data_directory: &Path) -> BrowserDiagnostics {
     let locations = native_manifest_locations();
     let manifest_locations = locations
@@ -170,9 +202,11 @@ pub fn diagnostics(data_directory: &Path) -> BrowserDiagnostics {
     let ipc_available = data_directory.join("browser-ipc.endpoint").exists();
     #[cfg(not(any(unix, windows)))]
     let ipc_available = false;
-    let (last_connection_at, last_error) = RUNTIME_STATUS.lock().map_or(
-        (None, Some("diagnostics state unavailable".into())),
-        |status| (status.last_connection_at, status.last_error.clone()),
+    let status = RUNTIME_STATUS.lock().ok();
+    let last_connection_at = status.as_ref().and_then(|value| value.last_connection_at);
+    let last_error = status.as_ref().map_or_else(
+        || Some("diagnostics state unavailable".into()),
+        |value| value.last_error.clone(),
     );
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -189,6 +223,27 @@ pub fn diagnostics(data_directory: &Path) -> BrowserDiagnostics {
         extension_connected,
         last_connection_at,
         last_error,
+        automatic_interception_enabled: status
+            .as_ref()
+            .and_then(|value| value.automatic_interception_enabled),
+        downloads_permission_granted: status
+            .as_ref()
+            .and_then(|value| value.downloads_permission_granted),
+        last_download_event_at: status
+            .as_ref()
+            .and_then(|value| value.last_download_event_at),
+        last_url_hostname: status
+            .as_ref()
+            .and_then(|value| value.last_url_hostname.clone()),
+        capture_decision: status
+            .as_ref()
+            .and_then(|value| value.capture_decision.clone()),
+        job_acceptance_status: status
+            .as_ref()
+            .and_then(|value| value.job_acceptance_status.clone()),
+        chrome_cancellation_result: status
+            .as_ref()
+            .and_then(|value| value.chrome_cancellation_result.clone()),
     }
 }
 
@@ -338,6 +393,63 @@ async fn dispatch_common(
                 "drmCircumvention": false
             })),
         ),
+        BrowserRequest::GetCaptureSettings => match service.settings().await {
+            Ok(settings) => {
+                record_connection();
+                success(
+                    request_id,
+                    ResponseCode::Capabilities,
+                    "browser capture settings",
+                    None,
+                    Some(json!({
+                        "enabled": settings.browser_capture_mode != BrowserCaptureMode::Off,
+                        "mode": if settings.browser_capture_mode == BrowserCaptureMode::Automatic { "automatic" } else { "ask" },
+                        "captureMode": settings.browser_capture_mode,
+                        "excludedSites": settings.browser_excluded_sites
+                    })),
+                )
+            }
+            Err(error) => ResponseEnvelope::error(
+                Some(request_id),
+                ResponseCode::InternalError,
+                error.to_string(),
+            ),
+        },
+        BrowserRequest::UpdateCaptureSettings(update) => match service.settings().await {
+            Ok(mut settings) => {
+                settings.browser_capture_mode = update.effective_mode();
+                settings.browser_excluded_sites = update.excluded_sites;
+                match service.save_settings(settings).await {
+                    Ok(()) => success(
+                        request_id,
+                        ResponseCode::Accepted,
+                        "browser capture settings saved",
+                        None,
+                        None,
+                    ),
+                    Err(error) => ResponseEnvelope::error(
+                        Some(request_id),
+                        ResponseCode::InternalError,
+                        error.to_string(),
+                    ),
+                }
+            }
+            Err(error) => ResponseEnvelope::error(
+                Some(request_id),
+                ResponseCode::InternalError,
+                error.to_string(),
+            ),
+        },
+        BrowserRequest::ReportCaptureDiagnostics(report) => {
+            record_capture_diagnostics(report);
+            success(
+                request_id,
+                ResponseCode::Accepted,
+                "browser diagnostics recorded",
+                None,
+                None,
+            )
+        }
         BrowserRequest::CaptureDownload(capture) => {
             let browser = format!("{:?}", capture.browser).to_ascii_lowercase();
             match service

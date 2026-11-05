@@ -21,5 +21,8 @@ export function hostExcluded(value, sites) {
     });
 }
 export function shouldIntercept(value, policy) {
-    return policy.enabled && policy.automatic && isEligibleUrl(value) && !hostExcluded(value, policy.excludedSites);
+    return policy.mode === 'automatic' && isEligibleUrl(value) && !hostExcluded(value, policy.excludedSites);
+}
+export function safeSuggestedFileName(value) {
+    return value?.split(/[\\/]/u).pop()?.slice(0, 255) || null;
 }

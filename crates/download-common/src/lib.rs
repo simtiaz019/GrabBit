@@ -140,12 +140,19 @@ pub struct AppSettings {
     pub default_segments: u8,
     pub default_download_directory: String,
     pub theme: Theme,
-    pub browser_capture_enabled: bool,
-    pub browser_automatic_interception: bool,
+    pub browser_capture_mode: BrowserCaptureMode,
     pub browser_excluded_sites: Vec<String>,
     pub yt_dlp_path: String,
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserCaptureMode {
+    Off,
+    Ask,
+    Automatic,
 }
 
 impl Default for AppSettings {
@@ -155,8 +162,7 @@ impl Default for AppSettings {
             default_segments: 4,
             default_download_directory: String::new(),
             theme: Theme::System,
-            browser_capture_enabled: true,
-            browser_automatic_interception: false,
+            browser_capture_mode: BrowserCaptureMode::Ask,
             browser_excluded_sites: Vec::new(),
             yt_dlp_path: String::new(),
             ffmpeg_path: String::new(),

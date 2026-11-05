@@ -62,8 +62,7 @@ export interface AppSettings {
   defaultSegments: number;
   defaultDownloadDirectory: string;
   theme: Theme;
-  browserCaptureEnabled: boolean;
-  browserAutomaticInterception: boolean;
+  browserCaptureMode: 'off' | 'ask' | 'automatic';
   browserExcludedSites: string[];
   ytDlpPath: string;
   ffmpegPath: string;
@@ -107,4 +106,11 @@ export interface BrowserDiagnostics {
   extensionConnected: boolean;
   lastConnectionAt: number | null;
   lastError: string | null;
+  automaticInterceptionEnabled: boolean | null;
+  downloadsPermissionGranted: boolean | null;
+  lastDownloadEventAt: number | null;
+  lastUrlHostname: string | null;
+  captureDecision: string | null;
+  jobAcceptanceStatus: string | null;
+  chromeCancellationResult: string | null;
 }

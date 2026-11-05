@@ -26,8 +26,8 @@ describe('App', () => {
   beforeEach(() => {
     vi.mocked(checkBackend).mockResolvedValue({ appName: 'GrabBit', version: '0.1.0', status: 'ok' });
     vi.mocked(listDownloads).mockResolvedValue([job]);
-    vi.mocked(getSettings).mockResolvedValue({ maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '/Downloads', theme: 'system', browserCaptureEnabled: true, browserAutomaticInterception: false, browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' });
-    vi.mocked(getBrowserDiagnostics).mockResolvedValue({ platform: 'macos', ipcAvailable: true, nativeHostRegistered: true, manifestLocations: ['/manifest.json'], extensionConnected: false, lastConnectionAt: null, lastError: null });
+    vi.mocked(getSettings).mockResolvedValue({ maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '/Downloads', theme: 'system', browserCaptureMode: 'ask', browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' });
+    vi.mocked(getBrowserDiagnostics).mockResolvedValue({ platform: 'macos', ipcAvailable: true, nativeHostRegistered: true, manifestLocations: ['/manifest.json'], extensionConnected: false, lastConnectionAt: null, lastError: null, automaticInterceptionEnabled: false, downloadsPermissionGranted: true, lastDownloadEventAt: null, lastUrlHostname: null, captureDecision: null, jobAcceptanceStatus: null, chromeCancellationResult: null });
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
     vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
     vi.mocked(probeUrl).mockResolvedValue({ finalUrl: job.url, fileName: job.fileName, contentLength: 1024, supportsRanges: true, etag: '"v1"', lastModified: null, contentType: 'application/octet-stream' });
@@ -45,6 +45,17 @@ describe('App', () => {
     expect(screen.getByText('file.bin')).toBeVisible();
     expect(checkBackend).toHaveBeenCalledOnce();
     expect(listDownloads).toHaveBeenCalledOnce();
+  });
+
+  it('uses one browser capture mode in desktop settings', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByTitle('Settings'));
+    const captureMode = await screen.findByLabelText('Capture mode');
+    expect(screen.getByRole('option', { name: 'Off' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Ask every time' })).toBeVisible();
+    fireEvent.change(captureMode, { target: { value: 'automatic' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ browserCaptureMode: 'automatic' })));
   });
 
   it('inspects metadata and submits a download', async () => {

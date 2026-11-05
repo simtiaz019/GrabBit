@@ -8,8 +8,8 @@ use std::{
 };
 
 use download_common::{
-    AppSettings, DownloadId, DownloadJob, DownloadKind, DownloadState, ProgressSnapshot,
-    RemoteMetadata,
+    AppSettings, BrowserCaptureMode, DownloadId, DownloadJob, DownloadKind, DownloadState,
+    ProgressSnapshot, RemoteMetadata,
 };
 use download_storage::{
     BrowserCaptureReservation, DownloadStorage, MediaRecord, SegmentCheckpoint, StorageError,
@@ -226,10 +226,10 @@ impl DownloadService {
         request: BrowserCaptureRequest,
     ) -> Result<BrowserCaptureResult, ServiceError> {
         let settings = self.storage.settings().await?;
-        if !settings.browser_capture_enabled {
+        if settings.browser_capture_mode == BrowserCaptureMode::Off {
             return Err(ServiceError::BrowserCaptureDisabled);
         }
-        if request.automatic && !settings.browser_automatic_interception {
+        if request.automatic && settings.browser_capture_mode != BrowserCaptureMode::Automatic {
             return Err(ServiceError::BrowserCaptureDisabled);
         }
         let parsed_url = url::Url::parse(&request.url).ok();

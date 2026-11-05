@@ -13,6 +13,7 @@ name = "grabbit-browser-host"
 path = "src/main.rs"
 
 [dependencies]
+download-common = { path = "../download-common" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

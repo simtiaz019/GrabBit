@@ -1,7 +1,6 @@
 import { envelope, NATIVE_HOST } from './contracts.js';
-import { isEligibleUrl } from './policy.js';
+import { isEligibleUrl, safeSuggestedFileName } from './policy.js';
 export const api = typeof browser !== 'undefined' ? browser : chrome;
-const DEFAULT_POLICY = { enabled: true, automatic: false, excludedSites: [] };
 function browserKind() {
     const agent = navigator.userAgent;
     if (agent.includes('Firefox/'))
@@ -13,23 +12,75 @@ function browserKind() {
     return 'chrome';
 }
 export async function policy() {
-    const stored = await api.storage.local.get(['enabled', 'automatic', 'excludedSites']);
+    const response = await native('GET_CAPTURE_SETTINGS');
+    const data = response.data;
+    if (!response.ok || !data || !Array.isArray(data.excludedSites)) {
+        throw new Error(response.ok ? 'GrabBit returned invalid capture settings.' : response.message);
+    }
+    const mode = data.captureMode === 'off' || data.captureMode === 'ask' || data.captureMode === 'automatic'
+        ? data.captureMode
+        : data.enabled === false ? 'off' : data.mode === 'automatic' ? 'automatic' : data.mode === 'ask' ? 'ask' : null;
+    if (!mode)
+        throw new Error('GrabBit returned an unsupported capture mode.');
     return {
-        enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_POLICY.enabled,
-        automatic: typeof stored.automatic === 'boolean' ? stored.automatic : DEFAULT_POLICY.automatic,
-        excludedSites: Array.isArray(stored.excludedSites) ? stored.excludedSites.filter((site) => typeof site === 'string') : [],
+        mode,
+        excludedSites: data.excludedSites.filter((site) => typeof site === 'string'),
     };
 }
-export async function native(type, payload) {
-    return api.runtime.sendNativeMessage(NATIVE_HOST, envelope(type, payload));
+export async function savePolicy(next) {
+    const response = await native('UPDATE_CAPTURE_SETTINGS', next);
+    if (!response.ok)
+        throw new Error(response.message);
+    return response;
 }
-export async function capture(url, suggestedFileName, sourcePage, automatic = false) {
+export async function native(type, payload) {
+    const request = api.runtime.sendNativeMessage(NATIVE_HOST, envelope(type, payload));
+    return Promise.race([
+        request,
+        new Promise((_, reject) => globalThis.setTimeout(() => reject(new Error('GrabBit did not respond in time')), 9_000)),
+    ]);
+}
+export async function capture(url, suggestedFileName, sourcePage, automatic = false, idempotencyKey = crypto.randomUUID()) {
     if (!isEligibleUrl(url))
         throw new Error('Only HTTP/HTTPS downloads can be sent to GrabBit.');
+    const fileName = safeSuggestedFileName(suggestedFileName);
     return native('CAPTURE_DOWNLOAD', {
-        url, suggestedFileName: suggestedFileName || null, browser: browserKind(),
+        url, suggestedFileName: fileName, browser: browserKind(),
         sourcePageOrigin: sourcePage ? new URL(sourcePage).origin : null,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
         automatic,
     });
+}
+export function hostname(value) {
+    try {
+        return new URL(value).hostname.toLowerCase();
+    }
+    catch {
+        return null;
+    }
+}
+export function safeError(reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    return message.replace(/https?:\/\/[^\s]+/giu, '[redacted URL]').slice(0, 240);
+}
+export async function reportDiagnostics(update) {
+    const stored = await api.storage.local.get('captureDiagnostics');
+    const previous = stored.captureDiagnostics && typeof stored.captureDiagnostics === 'object' ? stored.captureDiagnostics : {};
+    const diagnostics = {
+        automaticEnabled: false,
+        downloadsPermissionGranted: true,
+        lastEventAt: null,
+        lastHostname: null,
+        decision: 'none',
+        jobAcceptance: 'not_attempted',
+        cancellationResult: 'not_attempted',
+        lastError: null,
+        ...previous,
+        ...update,
+    };
+    await api.storage.local.set({ captureDiagnostics: diagnostics });
+    try {
+        await native('REPORT_CAPTURE_DIAGNOSTICS', diagnostics);
+    }
+    catch { /* Keep local diagnostics while GrabBit is offline. */ }
 }

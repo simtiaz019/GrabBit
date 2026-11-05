@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use download_common::{AppSettings, DownloadJob, DownloadKind, DownloadState, Theme};
+use download_common::{
+    AppSettings, BrowserCaptureMode, DownloadJob, DownloadKind, DownloadState, Theme,
+};
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use thiserror::Error;
 use uuid::Uuid;
@@ -10,6 +12,10 @@ use uuid::Uuid;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_initial.sql")),
     (2, include_str!("../migrations/0002_browser_media.sql")),
+    (
+        3,
+        include_str!("../migrations/0003_browser_capture_mode.sql"),
+    ),
 ];
 
 #[derive(Debug, Error)]
@@ -373,8 +379,7 @@ impl DownloadStorage {
             default_segments: to_u8(row.try_get::<i64, _>("default_segments")?)?,
             default_download_directory: row.try_get("default_download_directory")?,
             theme: parse_theme(row.try_get("theme")?)?,
-            browser_capture_enabled: preferences.browser_capture_enabled,
-            browser_automatic_interception: preferences.browser_automatic_interception,
+            browser_capture_mode: preferences.browser_capture_mode,
             browser_excluded_sites: preferences.browser_excluded_sites,
             yt_dlp_path: preferences.yt_dlp_path,
             ffmpeg_path: preferences.ffmpeg_path,
@@ -406,21 +411,25 @@ impl DownloadStorage {
         .await?;
         let excluded = serde_json::to_string(&settings.browser_excluded_sites)
             .map_err(|error| StorageError::InvalidState(error.to_string()))?;
+        let capture_enabled = settings.browser_capture_mode != BrowserCaptureMode::Off;
+        let automatic_interception = settings.browser_capture_mode == BrowserCaptureMode::Automatic;
         sqlx::query(
             "INSERT INTO browser_preferences
-             (singleton, capture_enabled, automatic_interception, excluded_sites_json,
+             (singleton, capture_enabled, automatic_interception, capture_mode, excluded_sites_json,
               yt_dlp_path, ffmpeg_path, ffprobe_path)
-             VALUES (1, ?, ?, ?, ?, ?, ?)
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(singleton) DO UPDATE SET
              capture_enabled=excluded.capture_enabled,
              automatic_interception=excluded.automatic_interception,
+             capture_mode=excluded.capture_mode,
              excluded_sites_json=excluded.excluded_sites_json,
              yt_dlp_path=excluded.yt_dlp_path,
              ffmpeg_path=excluded.ffmpeg_path,
              ffprobe_path=excluded.ffprobe_path",
         )
-        .bind(settings.browser_capture_enabled)
-        .bind(settings.browser_automatic_interception)
+        .bind(capture_enabled)
+        .bind(automatic_interception)
+        .bind(capture_mode_name(settings.browser_capture_mode))
         .bind(excluded)
         .bind(&settings.yt_dlp_path)
         .bind(&settings.ffmpeg_path)
@@ -439,8 +448,7 @@ impl DownloadStorage {
         };
         let sites: String = row.try_get("excluded_sites_json")?;
         Ok(AppSettings {
-            browser_capture_enabled: row.try_get("capture_enabled")?,
-            browser_automatic_interception: row.try_get("automatic_interception")?,
+            browser_capture_mode: parse_capture_mode(row.try_get("capture_mode")?)?,
             browser_excluded_sites: serde_json::from_str(&sites)
                 .map_err(|error| StorageError::InvalidState(error.to_string()))?,
             yt_dlp_path: row.try_get("yt_dlp_path")?,
@@ -744,6 +752,23 @@ fn parse_theme(value: &str) -> Result<Theme, StorageError> {
     }
 }
 
+fn capture_mode_name(mode: BrowserCaptureMode) -> &'static str {
+    match mode {
+        BrowserCaptureMode::Off => "off",
+        BrowserCaptureMode::Ask => "ask",
+        BrowserCaptureMode::Automatic => "automatic",
+    }
+}
+
+fn parse_capture_mode(value: &str) -> Result<BrowserCaptureMode, StorageError> {
+    match value {
+        "off" => Ok(BrowserCaptureMode::Off),
+        "ask" => Ok(BrowserCaptureMode::Ask),
+        "automatic" => Ok(BrowserCaptureMode::Automatic),
+        _ => Err(StorageError::InvalidState(value.to_owned())),
+    }
+}
+
 fn to_i64(value: u64) -> Result<i64, StorageError> {
     i64::try_from(value).map_err(|_| StorageError::NumericRange)
 }
@@ -811,8 +836,7 @@ mod tests {
             default_segments: 8,
             default_download_directory: "/tmp".into(),
             theme: Theme::Dark,
-            browser_capture_enabled: false,
-            browser_automatic_interception: true,
+            browser_capture_mode: BrowserCaptureMode::Off,
             browser_excluded_sites: vec!["example.com".into()],
             yt_dlp_path: "/tools/yt-dlp".into(),
             ffmpeg_path: "/tools/ffmpeg".into(),
@@ -823,6 +847,60 @@ mod tests {
             .await
             .expect("save settings");
         assert_eq!(storage.settings().await.expect("settings"), settings);
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_browser_capture_settings_to_one_mode() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        sqlx::query("CREATE TABLE _grabbit_migrations (version INTEGER PRIMARY KEY NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("migration table");
+        for (version, sql) in &MIGRATIONS[..2] {
+            for statement in sql
+                .split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .expect("legacy migration");
+            }
+            sqlx::query("INSERT INTO _grabbit_migrations(version) VALUES (?)")
+                .bind(version)
+                .execute(&pool)
+                .await
+                .expect("migration version");
+        }
+        sqlx::query(
+            "INSERT INTO app_settings
+             (singleton, max_concurrent_downloads, default_segments, default_download_directory, theme)
+             VALUES (1, 3, 4, '', 'system')",
+        )
+        .execute(&pool)
+        .await
+        .expect("application settings");
+        sqlx::query(
+            "INSERT INTO browser_preferences
+             (singleton, capture_enabled, automatic_interception, excluded_sites_json,
+              yt_dlp_path, ffmpeg_path, ffprobe_path)
+             VALUES (1, 1, 1, '[]', '', '', '')",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy browser settings");
+
+        let storage = DownloadStorage { pool };
+        storage.migrate().await.expect("new migration");
+        assert_eq!(
+            storage
+                .settings()
+                .await
+                .expect("settings")
+                .browser_capture_mode,
+            BrowserCaptureMode::Automatic
+        );
     }
 
     #[tokio::test]

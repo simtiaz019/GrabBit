@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 
+pub use download_common::BrowserCaptureMode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -43,12 +44,48 @@ pub struct RequestEnvelope {
 pub enum BrowserRequest {
     Ping,
     GetCapabilities,
+    GetCaptureSettings,
+    UpdateCaptureSettings(BrowserCaptureSettings),
+    ReportCaptureDiagnostics(CaptureDiagnosticsReport),
     CaptureDownload(CaptureDownload),
     InspectMedia(InspectMedia),
     CreateMediaDownload(CreateMediaDownload),
     GetRequestStatus(RequestStatusQuery),
     CancelPendingCapture(RequestStatusQuery),
     OpenApplication,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserCaptureSettings {
+    pub mode: BrowserCaptureMode,
+    pub excluded_sites: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl BrowserCaptureSettings {
+    #[must_use]
+    pub fn effective_mode(&self) -> BrowserCaptureMode {
+        if self.enabled == Some(false) {
+            BrowserCaptureMode::Off
+        } else {
+            self.mode
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDiagnosticsReport {
+    pub automatic_enabled: bool,
+    pub downloads_permission_granted: bool,
+    pub last_event_at: Option<u64>,
+    pub last_hostname: Option<String>,
+    pub decision: String,
+    pub job_acceptance: String,
+    pub cancellation_result: String,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +224,33 @@ pub fn validate_request(request: &RequestEnvelope) -> Result<(), ProtocolError> 
                 }
             }
         }
+        BrowserRequest::UpdateCaptureSettings(value)
+            if value.excluded_sites.len() > 128
+                || value.excluded_sites.iter().any(|site| {
+                    site.is_empty()
+                        || site.len() > 253
+                        || !site.chars().all(|character| {
+                            character.is_ascii_alphanumeric()
+                                || matches!(character, '.' | '-' | '*')
+                        })
+                }) =>
+        {
+            return Err(ProtocolError::InvalidField("excludedSites"));
+        }
+        BrowserRequest::ReportCaptureDiagnostics(value)
+            if value.decision.len() > 64
+                || value.job_acceptance.len() > 64
+                || value.cancellation_result.len() > 64
+                || value.last_hostname.as_ref().is_some_and(|host| {
+                    host.len() > 253 || host.contains(['/', '?', '#', '@'])
+                })
+                || value
+                    .last_error
+                    .as_ref()
+                    .is_some_and(|error| error.len() > 240) =>
+        {
+            return Err(ProtocolError::InvalidField("captureDiagnostics"));
+        }
         BrowserRequest::InspectMedia(value) => validate_http_url(&value.url)?,
         BrowserRequest::CreateMediaDownload(value)
             if value.format_ids.is_empty()
@@ -311,5 +375,23 @@ mod tests {
             }),
         };
         assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn reads_legacy_and_canonical_capture_settings() {
+        let legacy: BrowserCaptureSettings = serde_json::from_value(serde_json::json!({
+            "enabled": false,
+            "mode": "automatic",
+            "excludedSites": []
+        }))
+        .expect("legacy capture settings");
+        assert_eq!(legacy.effective_mode(), BrowserCaptureMode::Off);
+
+        let canonical: BrowserCaptureSettings = serde_json::from_value(serde_json::json!({
+            "mode": "off",
+            "excludedSites": []
+        }))
+        .expect("canonical capture settings");
+        assert_eq!(canonical.effective_mode(), BrowserCaptureMode::Off);
     }
 }

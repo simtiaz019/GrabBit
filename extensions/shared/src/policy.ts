@@ -1,4 +1,5 @@
-export interface CapturePolicy { enabled: boolean; automatic: boolean; excludedSites: string[] }
+export type CaptureMode = 'off' | 'automatic' | 'ask';
+export interface CapturePolicy { mode: CaptureMode; excludedSites: string[] }
 
 export function isEligibleUrl(value: string): boolean {
   try {
@@ -17,5 +18,9 @@ export function hostExcluded(value: string, sites: string[]): boolean {
 }
 
 export function shouldIntercept(value: string, policy: CapturePolicy): boolean {
-  return policy.enabled && policy.automatic && isEligibleUrl(value) && !hostExcluded(value, policy.excludedSites);
+  return policy.mode === 'automatic' && isEligibleUrl(value) && !hostExcluded(value, policy.excludedSites);
+}
+
+export function safeSuggestedFileName(value?: string): string | null {
+  return value?.split(/[\\/]/u).pop()?.slice(0, 255) || null;
 }
