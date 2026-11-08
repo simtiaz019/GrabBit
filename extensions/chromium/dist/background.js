@@ -1,5 +1,6 @@
 import { api, capture, hostname, native, policy, reportDiagnostics, safeError } from './native-client.js';
-import { hostExcluded, isEligibleUrl } from './policy.js';
+import { performAutomaticHandoff } from './automatic-handoff.js';
+import { captureDecision, isEligibleUrl } from './policy.js';
 const pendingKey = (id) => `pendingCapture:${id}`;
 const handledKey = (id) => `handledCapture:${id}`;
 function eligibleItem(item) {
@@ -24,18 +25,15 @@ async function cancelBrowserDownload(item) {
     }
 }
 async function automaticCapture(item, idempotencyKey) {
-    const response = await capture(item.finalUrl || item.url, item.filename, item.referrer, true, idempotencyKey);
-    if (!response.ok || !response.jobId) {
-        await reportDiagnostics({ decision: 'browser_continues', jobAcceptance: response.code || 'rejected', lastError: response.message });
-        return;
+    const result = await performAutomaticHandoff(() => capture(item.finalUrl || item.url, item.filename, item.referrer, true, idempotencyKey), () => cancelBrowserDownload(item));
+    if (result.accepted) {
+        await api.storage.local.set({ [handledKey(item.id)]: { idempotencyKey, accepted: true, createdAt: Date.now() } });
     }
-    const cancellation = await cancelBrowserDownload(item);
-    await api.storage.local.set({ [handledKey(item.id)]: { idempotencyKey, accepted: true, createdAt: Date.now() } });
     await reportDiagnostics({
-        decision: cancellation === 'cancelled' ? 'captured' : 'duplicate_risk',
-        jobAcceptance: response.code,
-        cancellationResult: cancellation,
-        lastError: cancellation === 'cancelled' ? null : 'Chrome could not be cancelled after GrabBit accepted the job.',
+        decision: result.decision,
+        jobAcceptance: result.jobAcceptance,
+        cancellationResult: result.cancellationResult,
+        lastError: result.lastError,
     });
 }
 async function askEveryTime(item, idempotencyKey) {
@@ -79,26 +77,15 @@ async function handleCreated(initial) {
     }
     const current = await policy();
     await reportDiagnostics({ automaticEnabled: current.mode === 'automatic' });
-    if (current.mode === 'off') {
-        await reportDiagnostics({ decision: 'disabled' });
-        return;
-    }
-    if (hostExcluded(url, current.excludedSites)) {
-        await reportDiagnostics({ decision: 'excluded' });
-        return;
-    }
     const existing = await api.storage.local.get(handledKey(item.id));
-    if (existing[handledKey(item.id)]) {
-        await reportDiagnostics({ decision: 'duplicate_event' });
-        return;
-    }
-    if (item.state === 'complete') {
-        await reportDiagnostics({ decision: 'browser_completed' });
+    const decision = captureDecision(url, current, Boolean(existing[handledKey(item.id)]), item.state === 'complete');
+    if (decision !== 'automatic' && decision !== 'ask') {
+        await reportDiagnostics({ decision });
         return;
     }
     const idempotencyKey = crypto.randomUUID();
     await api.storage.local.set({ [handledKey(item.id)]: { idempotencyKey, processing: true, createdAt: Date.now() } });
-    if (current.mode === 'automatic')
+    if (decision === 'automatic')
         await automaticCapture(item, idempotencyKey);
     else
         await askEveryTime(item, idempotencyKey);

@@ -1,11 +1,20 @@
 mod browser_integration;
 mod browser_ipc;
 mod commands;
+mod lifecycle;
 
-use download_common::BrowserCaptureMode;
+use download_common::{BrowserCaptureMode, DownloadState};
 use download_core::DownloadService;
 use std::path::Path;
-use tauri::{Emitter, Manager};
+use tauri::{
+    Emitter, Manager,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+};
+
+use crate::lifecycle::{ActivationDecision, ActivationSource, LifecycleState, activation_decision};
+
+struct AppDataDirectory(std::path::PathBuf);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::too_many_lines)]
@@ -21,7 +30,14 @@ pub fn run() {
         .try_init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _arguments, _directory| {
+                restore_main_window(app, None, ActivationSource::SecondInstance);
+            },
+        ))
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .manage(LifecycleState::default())
         .setup(|app| {
             let data_directory = std::env::var_os("GRABBIT_DATA_DIRECTORY")
                 .map(std::path::PathBuf::from)
@@ -39,6 +55,7 @@ pub fn run() {
             sync_browser_native_host(&resource_directory).map_err(|error| error.to_string())?;
             let service = tauri::async_runtime::block_on(DownloadService::open(&data_directory))
                 .map_err(|error| error.to_string())?;
+            app.manage(AppDataDirectory(data_directory.clone()));
             let ipc_service = service.clone();
             let ipc_directory = data_directory.clone();
             let ipc_handle = app.handle().clone();
@@ -89,7 +106,25 @@ pub fn run() {
                 }
             });
             app.manage(service);
+            setup_tray(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let lifecycle = window.state::<LifecycleState>();
+                if lifecycle
+                    .close_decision()
+                    .keeps_background_services_running()
+                {
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        tracing::warn!(%error, "failed to hide main window");
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
@@ -112,18 +147,136 @@ pub fn run() {
             commands::remove_browser_integration,
             commands::get_onboarding_complete,
             commands::set_onboarding_complete,
+            commands::get_launch_at_login,
+            commands::set_launch_at_login,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build GrabBit desktop application")
-        .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                let service = app
-                    .state::<std::sync::Arc<DownloadService>>()
-                    .inner()
-                    .clone();
-                tauri::async_runtime::block_on(service.shutdown());
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => shutdown(app),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                restore_main_window(app, None, ActivationSource::Tray);
             }
+            _ => {}
         });
+}
+
+fn shutdown(app: &tauri::AppHandle) {
+    if !app.state::<LifecycleState>().begin_shutdown() {
+        return;
+    }
+    let service = app
+        .state::<std::sync::Arc<DownloadService>>()
+        .inner()
+        .clone();
+    tauri::async_runtime::block_on(service.shutdown());
+    let data_directory = app.state::<AppDataDirectory>();
+    browser_ipc::cleanup_endpoint(&data_directory.0);
+}
+
+fn restore_main_window(
+    app: &tauri::AppHandle,
+    destination: Option<&str>,
+    source: ActivationSource,
+) {
+    let ActivationDecision::RestoreAndFocus = activation_decision(source);
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Err(error) = window.unminimize() {
+        tracing::warn!(%error, "failed to unminimize main window");
+    }
+    if let Err(error) = window.show() {
+        tracing::warn!(%error, "failed to show main window");
+    }
+    if let Err(error) = window.set_focus() {
+        tracing::warn!(%error, "failed to focus main window");
+    }
+    if let Some(destination) = destination
+        && let Err(error) = app.emit("tray-navigate", destination)
+    {
+        tracing::warn!(%error, "failed to navigate from tray");
+    }
+}
+
+fn set_all_downloads_paused(app: &tauri::AppHandle, paused: bool) {
+    let service = app
+        .state::<std::sync::Arc<DownloadService>>()
+        .inner()
+        .clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(jobs) = service.list().await else {
+            tracing::warn!("failed to list downloads for tray action");
+            return;
+        };
+        for job in jobs {
+            let result = if paused
+                && matches!(
+                    job.state,
+                    DownloadState::Queued
+                        | DownloadState::Downloading
+                        | DownloadState::Merging
+                        | DownloadState::Converting
+                        | DownloadState::Verifying
+                ) {
+                service.pause(job.id).await
+            } else if !paused && job.state == DownloadState::Paused {
+                service.resume(job.id).await
+            } else {
+                continue;
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, download_id = %job.id, "tray bulk action failed");
+            }
+        }
+    });
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Open GrabBit", true, None::<&str>)?;
+    let active = MenuItem::with_id(
+        app,
+        "active-downloads",
+        "Show active downloads",
+        true,
+        None::<&str>,
+    )?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let pause = MenuItem::with_id(app, "pause-all", "Pause all", true, None::<&str>)?;
+    let resume = MenuItem::with_id(app, "resume-all", "Resume all", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit GrabBit", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open, &active, &separator, &pause, &resume, &settings, &quit,
+        ],
+    )?;
+
+    let mut tray = TrayIconBuilder::with_id("grabbit-tray")
+        .tooltip("GrabBit Download Manager")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => restore_main_window(app, None, ActivationSource::Tray),
+            "active-downloads" => {
+                restore_main_window(app, Some("active"), ActivationSource::Tray);
+            }
+            "pause-all" => set_all_downloads_paused(app, true),
+            "resume-all" => set_all_downloads_paused(app, false),
+            "settings" => restore_main_window(app, Some("settings"), ActivationSource::Tray),
+            "quit" => {
+                app.state::<LifecycleState>().request_quit();
+                app.exit(0);
+            }
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 fn discover_tool(name: &str) -> Option<std::path::PathBuf> {

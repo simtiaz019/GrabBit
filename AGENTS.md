@@ -25,3 +25,6 @@ Run Rust formatting, Clippy with warnings denied, workspace tests, frontend
 lint/typecheck/tests/build, and relevant deterministic integration tests. Do not
 claim a check passed unless it was executed successfully.
 
+## Development Workflow
+
+Work only on the requested milestone. Inspect relevant files first using targeted searches. Avoid reading the entire repository or repeating already completed audits. Preserve existing code and uncommitted changes. Make minimal focused changes. Run relevant unit tests, typechecks and builds only; leave full-suite/native packaging to final release validation. Do not browse unless necessary. Report only changed files, focused tests, remaining blockers and manual verification steps. Keep final responses under 200 words. Do not begin the next milestone automatically.

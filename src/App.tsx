@@ -7,17 +7,17 @@ import {
   SlidersHorizontal, Trash2, Video, X, type LucideIcon,
 } from 'lucide-react';
 import {
-  addDownload, cancelDownload, checkBackend, chooseDownloadDirectory, createMediaDownload, getBrowserDiagnostics, getSettings,
+  addDownload, cancelDownload, checkBackend, chooseDownloadDirectory, createMediaDownload, getBrowserDiagnostics, getLaunchAtLogin, getSettings,
   getBrowserSetup, getOnboardingComplete, inspectMedia, removeBrowserIntegration, repairBrowserIntegration,
-  listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, resumeDownload,
-  retryDownload, saveSettings, setOnboardingComplete,
+  listDownloads, onBrowserMediaRequest, onProgress, onTrayNavigate, pauseDownload, probeUrl, removeDownload, resumeDownload,
+  retryDownload, saveSettings, setLaunchAtLogin, setOnboardingComplete,
 } from './bridge';
 import type { AppSettings, BrowserDiagnostics, BrowserSetupReport, DownloadJob, DownloadState, MediaInspection, MediaOutput, RemoteMetadata } from './types';
 
 type View = 'downloads' | 'active' | 'queued' | 'completed' | 'failed' | 'activity' | 'documents' | 'videos' | 'audio' | 'software' | 'archives' | 'others' | 'settings' | 'about';
 type Action = 'pause' | 'resume' | 'retry' | 'cancel' | 'remove' | 'copy';
 type SortKey = 'name' | 'size' | 'progress' | 'speed' | 'eta' | 'status';
-const defaults: AppSettings = { maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '', theme: 'system', browserCaptureMode: 'ask', browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' };
+const defaults: AppSettings = { maxConcurrentDownloads: 3, defaultSegments: 4, defaultDownloadDirectory: '', theme: 'system', browserCaptureMode: 'automatic', browserExcludedSites: [], ytDlpPath: '', ffmpegPath: '', ffprobePath: '' };
 const mainNav: Array<[View, string, LucideIcon]> = [['downloads', 'Downloads', Download], ['active', 'Active', Activity], ['queued', 'Queued', Clock3], ['completed', 'Completed', Check], ['failed', 'Failed', CircleAlert], ['activity', 'Activity', Gauge]];
 const categories: Array<[View, string, LucideIcon]> = [['documents', 'Documents', FileText], ['videos', 'Videos', Video], ['audio', 'Audio', AudioLines], ['software', 'Software', FileCode2], ['archives', 'Archives', Archive], ['others', 'Others', File]];
 
@@ -39,6 +39,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [launchAtLogin, setLaunchAtLoginState] = useState(false);
+  const [showBackgroundNotice, setShowBackgroundNotice] = useState(() => localStorage.getItem('grabbit-background-notice-seen') !== '1');
   const searchRef = useRef<HTMLInputElement>(null);
   const refresh = useCallback(async () => setJobs(await listDownloads()), []);
 
@@ -56,11 +58,18 @@ export default function App() {
 
   useEffect(() => {
     void getOnboardingComplete().then((complete) => setShowOnboarding(!complete)).catch(() => setShowOnboarding(true));
+    void getLaunchAtLogin().then(setLaunchAtLoginState).catch(() => undefined);
   }, []);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
     void onBrowserMediaRequest((url) => { setMediaUrl(url); setShowMedia(true); }).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, []);
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void onTrayNavigate((destination) => setView(destination)).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
   }, []);
 
@@ -91,16 +100,21 @@ export default function App() {
     void act(operations[name]);
   }
   function setSortKey(key: SortKey) { setSort((current) => ({ key, asc: current.key === key ? !current.asc : true })); }
+  function changeLaunchAtLogin(enabled: boolean) {
+    setLaunchAtLoginState(enabled);
+    void setLaunchAtLogin(enabled).catch((reason: unknown) => { setLaunchAtLoginState(!enabled); setError(message(reason)); });
+  }
 
   return <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`} onClick={() => setContext(null)}>
     <Sidebar collapsed={collapsed} jobs={jobs} onCollapse={() => setCollapsed((value) => !value)} onNavigate={(next) => { setView(next); setDetailsId(null); }} view={view} />
     <div className="app-workspace">
       <header className="top-toolbar"><div className="page-heading"><button className="icon-button mobile-menu" onClick={() => setCollapsed((value) => !value)} title="Toggle sidebar" type="button"><Menu size={18} /></button><div><h1>{title(view)}</h1><p>{subtitle(view)}</p></div></div><div className="toolbar-actions"><label className="global-search"><Search size={16} /><input aria-label="Search downloads" onChange={(event) => setQuery(event.target.value)} placeholder="Search downloads" ref={searchRef} value={query} /><kbd>⌘F</kbd></label><button className="secondary compact" onClick={() => { setMediaUrl(''); setShowMedia(true); }} type="button"><Video size={17} /> Add Media</button><button className="primary compact" onClick={() => setShowAdd(true)} type="button"><Plus size={17} /> Add Download</button><button className="icon-button" onClick={() => setView('settings')} title="Settings" type="button"><Settings size={18} /></button></div></header>
       {error && <div className="error-banner" role="alert"><CircleAlert size={17} /><span>{error}</span><button onClick={() => setError(null)} type="button"><X size={16} /></button></div>}
+      {showBackgroundNotice && <div className="error-banner" role="status"><Info size={17} /><span>Closing the GrabBit window keeps downloads and browser capture running in the background. Use the tray menu to reopen or quit.</span><button aria-label="Dismiss background operation notice" onClick={() => { localStorage.setItem('grabbit-background-notice-seen', '1'); setShowBackgroundNotice(false); }} type="button"><X size={16} /></button></div>}
       <div className="content-frame"><main className="main-content">
         {isListView(view) && <><Summary active={active.length} queued={jobs.filter((job) => job.state === 'queued').length} speed={speed} total={jobs.length} /><div className="download-toolbar"><div><SlidersHorizontal size={15} /><span>{visible.length} downloads</span>{selected.size > 0 && <b>{selected.size} selected</b>}</div><button className="secondary compact" onClick={() => void refresh()} type="button"><RefreshCw size={15} /> Refresh</button></div>{loading ? <LoadingState /> : <DownloadTable jobs={visible} onAction={action} onContext={(event, job) => { event.preventDefault(); event.stopPropagation(); setContext({ id: job.id, x: event.clientX, y: event.clientY }); }} onDetails={(job) => setDetailsId(job.id)} onSelect={(id, checked) => setSelected((current) => { const next = new Set(current); if (checked) next.add(id); else next.delete(id); return next; })} onSelectAll={(checked) => setSelected(checked ? new Set(visible.map((job) => job.id)) : new Set())} onSort={setSortKey} selected={selected} sort={sort} />}</>}
         {view === 'activity' && <ActivityView jobs={jobs} />}
-        {view === 'settings' && <SettingsView onOpenSetup={() => setShowOnboarding(true)} settings={settings} onChange={setSettings} onSave={() => act(() => saveSettings(settings))} />}
+        {view === 'settings' && <><BackgroundSettings enabled={launchAtLogin} onChange={changeLaunchAtLogin} /><SettingsView onOpenSetup={() => setShowOnboarding(true)} settings={settings} onChange={setSettings} onSave={() => act(() => saveSettings(settings))} /></>}
         {view === 'about' && <About backend={backend} />}
       </main>{details && <Details job={details} onAction={action} onClose={() => setDetailsId(null)} />}</div>
       <footer className="status-bar"><div><i /> Engine ready <small>{backend}</small></div><div><span>{active.length} active</span><span className="numeric">{formatBytes(speed)}/s</span></div></footer>
@@ -165,6 +179,10 @@ function MediaDownloadDialog({ initialUrl, settings, onClose, onCreated, onError
 function mediaFormatLabel(format: MediaInspection['formats'][number]) { const resolution = format.height ? `${format.height}p${format.frameRate ? ` ${format.frameRate}fps` : ''}` : 'Audio'; const codecs = [format.videoCodec, format.audioCodec].filter(Boolean).join(' + '); return `${resolution} · ${format.extension ?? format.container ?? 'source'}${codecs ? ` · ${codecs}` : ''}${format.estimatedBytes ? ` · ${formatBytes(format.estimatedBytes)}` : ''}`; }
 
 function ActivityView({ jobs }: { jobs: DownloadJob[] }) { const active = jobs.filter((job) => job.state === 'downloading'); const completed = jobs.filter((job) => job.state === 'completed').sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8); const speed = active.reduce((sum, job) => sum + job.speedBytesPerSecond, 0); return <div className="page-stack"><Summary active={active.length} queued={jobs.filter((job) => job.state === 'queued').length} speed={speed} total={jobs.length} /><section className="surface-section"><div className="section-heading"><div><h2>Transfer activity</h2><p>Live information reported by the download engine.</p></div><Status state={active.length ? 'downloading' : 'paused'} /></div><div className="activity-meter"><Gauge size={22} /><div><span>Aggregate download speed</span><strong>{formatBytes(speed)}/s</strong></div></div></section><section className="surface-section"><div className="section-heading"><div><h2>Recent completions</h2><p>Latest successfully finished downloads.</p></div></div>{completed.length ? <div className="recent-list">{completed.map((job) => <div key={job.id}><span className="file-icon"><Check size={16} /></span><span><strong>{job.fileName}</strong><small>{job.totalBytes ? formatBytes(job.totalBytes) : 'Unknown size'}</small></span><time>{relativeTime(job.updatedAt)}</time></div>)}</div> : <p className="muted-message">No completed downloads yet.</p>}</section></div>; }
+
+function BackgroundSettings({ enabled, onChange }: { enabled: boolean; onChange: (enabled: boolean) => void }) {
+  return <section className="settings-section"><div className="section-heading"><div><h2>Background operation</h2><p>GrabBit stays available in the system tray after its window closes.</p></div></div><label className="authorization-check"><input checked={enabled} onChange={(event) => onChange(event.target.checked)} type="checkbox" />Launch GrabBit when I sign in</label></section>;
+}
 
 function SettingsView({ settings, onChange, onSave, onOpenSetup }: { settings: AppSettings; onChange: (settings: AppSettings) => void; onSave: () => void; onOpenSetup: () => void }) { return <div className="settings-layout"><aside><a href="#general">General</a><a href="#downloads">Downloads</a><a href="#browser">Browser integration</a><a href="#media-tools">Media tools</a><a href="#appearance">Appearance</a></aside><div className="settings-content"><SettingsSection description="Default behavior for new downloads." id="general" title="General"><label>Default download directory<div className="field-with-action"><Folder size={17} /><input onChange={(event) => onChange({ ...settings, defaultDownloadDirectory: event.target.value })} value={settings.defaultDownloadDirectory} /><button className="secondary compact" onClick={() => void chooseDownloadDirectory().then((value) => value && onChange({ ...settings, defaultDownloadDirectory: value }))} type="button">Browse</button></div></label></SettingsSection><SettingsSection description="Connection defaults. Concurrency changes take effect after restart." id="downloads" title="Downloads"><div className="settings-grid"><label>Maximum concurrent downloads<input max="32" min="1" onChange={(event) => onChange({ ...settings, maxConcurrentDownloads: Number(event.target.value) })} type="number" value={settings.maxConcurrentDownloads} /></label><label>Connections per download<input max="32" min="1" onChange={(event) => onChange({ ...settings, defaultSegments: Number(event.target.value) })} type="number" value={settings.defaultSegments} /></label></div></SettingsSection><SettingsSection description="Control browser capture centrally. The extension always reads and saves this policy through GrabBit." id="browser" title="Browser integration"><label>Capture mode<select onChange={(event) => { const value = event.target.value; if (value === 'off' || value === 'ask' || value === 'automatic') onChange({ ...settings, browserCaptureMode: value }); }} value={settings.browserCaptureMode}><option value="off">Off</option><option value="ask">Ask every time</option><option value="automatic">Automatic (IDM-style)</option></select></label><label>Excluded sites <span>(one hostname per line)</span><textarea onChange={(event) => onChange({ ...settings, browserExcludedSites: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) })} rows={4} value={settings.browserExcludedSites.join('\n')} /></label><button className="secondary compact" onClick={onOpenSetup} type="button">Open browser setup wizard</button><BrowserDiagnosticsPanel /></SettingsSection><SettingsSection description="Use absolute paths to trusted, separately installed executables. GrabBit never downloads or updates these tools silently." id="media-tools" title="Media tools"><div className="tool-paths"><label>yt-dlp<input onChange={(event) => onChange({ ...settings, ytDlpPath: event.target.value })} placeholder="/opt/homebrew/bin/yt-dlp" value={settings.ytDlpPath} /></label><label>FFmpeg<input onChange={(event) => onChange({ ...settings, ffmpegPath: event.target.value })} placeholder="/opt/homebrew/bin/ffmpeg" value={settings.ffmpegPath} /></label><label>FFprobe<input onChange={(event) => onChange({ ...settings, ffprobePath: event.target.value })} placeholder="/opt/homebrew/bin/ffprobe" value={settings.ffprobePath} /></label></div></SettingsSection><SettingsSection description="Choose how GrabBit follows your desktop appearance." id="appearance" title="Appearance"><div className="theme-options">{(['system', 'light', 'dark'] as const).map((theme) => <button className={settings.theme === theme ? 'selected' : ''} key={theme} onClick={() => onChange({ ...settings, theme })} type="button"><span className={`theme-preview ${theme}`} /><strong>{theme === 'system' ? 'Follow system' : capitalize(theme)}</strong>{settings.theme === theme && <Check size={16} />}</button>)}</div></SettingsSection><div className="settings-save"><button className="primary" onClick={onSave} type="button">Save settings</button></div></div></div>; }
 

@@ -1,6 +1,10 @@
 #[cfg(unix)]
 mod unix {
-    use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+    use std::{
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
     use browser_native_host::{MAX_MESSAGE_BYTES, RequestEnvelope, validate_request};
     use download_core::DownloadService;
@@ -10,6 +14,18 @@ mod unix {
         io::{AsyncReadExt, AsyncWriteExt},
         net::{UnixListener, UnixStream},
     };
+
+    struct EndpointGuard(PathBuf);
+
+    impl Drop for EndpointGuard {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_file(&self.0)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, "failed to remove browser IPC endpoint");
+            }
+        }
+    }
 
     pub async fn serve(service: Arc<DownloadService>, data_directory: &Path, app: AppHandle) {
         let endpoint = data_directory.join("browser-ipc.sock");
@@ -30,6 +46,7 @@ mod unix {
                 return;
             }
         };
+        let _endpoint_guard = EndpointGuard(endpoint.clone());
         if let Err(error) =
             fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).await
         {
@@ -105,6 +122,29 @@ mod unix {
             .map_err(|error| error.to_string())?;
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::EndpointGuard;
+
+        #[test]
+        fn endpoint_guard_removes_socket_path_on_shutdown() {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let endpoint = directory.path().join("browser-ipc.sock");
+            std::fs::write(&endpoint, b"fixture").expect("endpoint fixture");
+            drop(EndpointGuard(endpoint.clone()));
+            assert!(!endpoint.exists());
+        }
+
+        #[test]
+        fn controlled_shutdown_removes_ipc_endpoint() {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let endpoint = directory.path().join("browser-ipc.sock");
+            std::fs::write(&endpoint, b"fixture").expect("endpoint fixture");
+            super::super::cleanup_endpoint(directory.path());
+            assert!(!endpoint.exists());
+        }
+    }
 }
 
 use std::{
@@ -141,6 +181,21 @@ pub struct BrowserDiagnostics {
     pub chrome_cancellation_result: Option<String>,
     pub last_download_job_id: Option<String>,
     pub last_failure_category: Option<String>,
+}
+
+pub fn cleanup_endpoint(data_directory: &Path) {
+    #[cfg(unix)]
+    let endpoint = data_directory.join("browser-ipc.sock");
+    #[cfg(windows)]
+    let endpoint = data_directory.join("browser-ipc.endpoint");
+    #[cfg(not(any(unix, windows)))]
+    return;
+
+    if let Err(error) = std::fs::remove_file(endpoint)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(%error, "failed to remove browser IPC endpoint during shutdown");
+    }
 }
 
 #[derive(Debug, Default)]
@@ -222,7 +277,8 @@ pub fn diagnostics(data_directory: &Path) -> BrowserDiagnostics {
         .map(|path| path.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     #[cfg(unix)]
-    let ipc_available = data_directory.join("browser-ipc.sock").exists();
+    let ipc_available =
+        std::os::unix::net::UnixStream::connect(data_directory.join("browser-ipc.sock")).is_ok();
     #[cfg(windows)]
     let ipc_available = data_directory.join("browser-ipc.endpoint").exists();
     #[cfg(not(any(unix, windows)))]

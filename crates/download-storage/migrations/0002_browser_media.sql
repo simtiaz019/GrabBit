@@ -3,7 +3,7 @@ ALTER TABLE download_jobs ADD COLUMN job_kind TEXT NOT NULL DEFAULT 'file';
 CREATE TABLE IF NOT EXISTS browser_preferences (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
     capture_enabled INTEGER NOT NULL DEFAULT 1 CHECK (capture_enabled IN (0, 1)),
-    automatic_interception INTEGER NOT NULL DEFAULT 0 CHECK (automatic_interception IN (0, 1)),
+    automatic_interception INTEGER NOT NULL DEFAULT 1 CHECK (automatic_interception IN (0, 1)),
     excluded_sites_json TEXT NOT NULL DEFAULT '[]',
     yt_dlp_path TEXT NOT NULL DEFAULT '',
     ffmpeg_path TEXT NOT NULL DEFAULT '',

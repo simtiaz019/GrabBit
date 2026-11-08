@@ -52,6 +52,8 @@ export const repairBrowserIntegration = (browserIds: string[]): Promise<BrowserS
 export const removeBrowserIntegration = (): Promise<void> => invoke('remove_browser_integration');
 export const getOnboardingComplete = (): Promise<boolean> => invoke('get_onboarding_complete');
 export const setOnboardingComplete = (complete: boolean): Promise<void> => invoke('set_onboarding_complete', { complete });
+export const getLaunchAtLogin = (): Promise<boolean> => invoke('get_launch_at_login');
+export const setLaunchAtLogin = (enabled: boolean): Promise<void> => invoke('set_launch_at_login', { enabled });
 
 export async function chooseDownloadDirectory(): Promise<string | null> {
   const selected = await open({ directory: true, multiple: false, title: 'Choose download folder' });
@@ -65,3 +67,7 @@ export const onProgress = (
 export const onBrowserMediaRequest = (
   callback: (url: string) => void,
 ): Promise<UnlistenFn> => listen<string>('browser-media-request', ({ payload }) => callback(payload));
+
+export const onTrayNavigate = (
+  callback: (destination: 'active' | 'settings') => void,
+): Promise<UnlistenFn> => listen<'active' | 'settings'>('tray-navigate', ({ payload }) => callback(payload));

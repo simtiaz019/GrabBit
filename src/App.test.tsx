@@ -1,14 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getBrowserSetup, getOnboardingComplete, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, pauseDownload, probeUrl, removeDownload, repairBrowserIntegration, resumeDownload, retryDownload, saveSettings, setOnboardingComplete } from './bridge';
+import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getBrowserSetup, getLaunchAtLogin, getOnboardingComplete, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, onTrayNavigate, pauseDownload, probeUrl, removeDownload, repairBrowserIntegration, resumeDownload, retryDownload, saveSettings, setLaunchAtLogin, setOnboardingComplete } from './bridge';
 import type { ProgressSnapshot } from './types';
 
 vi.mock('./bridge', () => ({
   addDownload: vi.fn(), cancelDownload: vi.fn(), checkBackend: vi.fn(),
-  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getBrowserDiagnostics: vi.fn(), getBrowserSetup: vi.fn(), getOnboardingComplete: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
-  onBrowserMediaRequest: vi.fn(), onProgress: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
-  removeBrowserIntegration: vi.fn(), repairBrowserIntegration: vi.fn(), resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(), setOnboardingComplete: vi.fn(),
+  chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getBrowserDiagnostics: vi.fn(), getBrowserSetup: vi.fn(), getLaunchAtLogin: vi.fn(), getOnboardingComplete: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
+  onBrowserMediaRequest: vi.fn(), onProgress: vi.fn(), onTrayNavigate: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
+  removeBrowserIntegration: vi.fn(), repairBrowserIntegration: vi.fn(), resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(), setLaunchAtLogin: vi.fn(), setOnboardingComplete: vi.fn(),
 }));
 
 const job = {
@@ -32,9 +32,12 @@ describe('App', () => {
     vi.mocked(getBrowserSetup).mockResolvedValue(setup);
     vi.mocked(repairBrowserIntegration).mockResolvedValue(setup);
     vi.mocked(getOnboardingComplete).mockResolvedValue(true);
+    vi.mocked(getLaunchAtLogin).mockResolvedValue(false);
+    vi.mocked(setLaunchAtLogin).mockResolvedValue();
     vi.mocked(setOnboardingComplete).mockResolvedValue();
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
     vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
+    vi.mocked(onTrayNavigate).mockResolvedValue(vi.fn());
     vi.mocked(probeUrl).mockResolvedValue({ finalUrl: job.url, fileName: job.fileName, contentLength: 1024, supportsRanges: true, etag: '"v1"', lastModified: null, contentType: 'application/octet-stream' });
     vi.mocked(addDownload).mockResolvedValue(job);
     vi.mocked(inspectMedia).mockResolvedValue({ sourceUrl: 'https://media.example/watch/1', website: 'Generic', title: 'Licensed sample', thumbnailUrl: null, durationSeconds: 30, availability: 'public', restrictionReason: null, subtitles: [], formats: [

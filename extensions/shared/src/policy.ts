@@ -21,6 +21,19 @@ export function shouldIntercept(value: string, policy: CapturePolicy): boolean {
   return policy.mode === 'automatic' && isEligibleUrl(value) && !hostExcluded(value, policy.excludedSites);
 }
 
+export function captureDecision(
+  value: string,
+  policy: CapturePolicy,
+  alreadyHandled: boolean,
+  browserCompleted: boolean,
+): 'automatic' | 'ask' | 'disabled' | 'excluded' | 'duplicate_event' | 'browser_completed' {
+  if (policy.mode === 'off') return 'disabled';
+  if (hostExcluded(value, policy.excludedSites)) return 'excluded';
+  if (alreadyHandled) return 'duplicate_event';
+  if (browserCompleted) return 'browser_completed';
+  return policy.mode;
+}
+
 export function safeSuggestedFileName(value?: string): string | null {
   return value?.split(/[\\/]/u).pop()?.slice(0, 255) || null;
 }

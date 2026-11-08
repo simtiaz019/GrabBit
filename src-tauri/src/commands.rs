@@ -8,6 +8,7 @@ use media_engine::{
     YtDlpAdapter, fetch_secure_thumbnail,
 };
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -109,6 +110,25 @@ pub async fn save_settings(
         .save_settings(settings)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+pub fn get_launch_at_login(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    }
+    .map_err(|error| error.to_string())
 }
 
 fn media_adapter(settings: &AppSettings) -> Result<YtDlpAdapter, String> {

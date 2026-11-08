@@ -162,7 +162,7 @@ impl Default for AppSettings {
             default_segments: 4,
             default_download_directory: String::new(),
             theme: Theme::System,
-            browser_capture_mode: BrowserCaptureMode::Ask,
+            browser_capture_mode: BrowserCaptureMode::Automatic,
             browser_excluded_sites: Vec::new(),
             yt_dlp_path: String::new(),
             ffmpeg_path: String::new(),

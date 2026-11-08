@@ -1,5 +1,5 @@
 ALTER TABLE browser_preferences
-    ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'ask'
+    ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'automatic'
     CHECK (capture_mode IN ('off', 'ask', 'automatic'));
 
 UPDATE browser_preferences

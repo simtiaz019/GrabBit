@@ -814,15 +814,8 @@ struct RawInspection {
     duration: Option<f64>,
     availability: Option<String>,
     formats: Option<Vec<RawFormat>>,
-    subtitles: Option<serde_json::Map<String, serde_json::Value>>,
-    has_drm: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawFormat {
     format_id: Option<String>,
     ext: Option<String>,
-    container: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<f64>,
@@ -830,49 +823,48 @@ struct RawFormat {
     acodec: Option<String>,
     abr: Option<f64>,
     filesize: Option<u64>,
+    subtitles: Option<serde_json::Map<String, serde_json::Value>>,
+    has_drm: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawFormat {
+    format_id: Option<String>,
+    ext: Option<String>,
+    container: Option<String>,
+    audio_ext: Option<String>,
+    video_ext: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+    vcodec: Option<String>,
+    acodec: Option<String>,
+    abr: Option<f64>,
+    asr: Option<u32>,
+    audio_channels: Option<u32>,
+    filesize: Option<u64>,
     filesize_approx: Option<u64>,
 }
 
 fn parse_inspection(bytes: &[u8], fallback_url: &str) -> Result<MediaInspection, MediaError> {
     let raw: RawInspection = serde_json::from_slice(bytes)
         .map_err(|error| MediaError::InvalidMetadata(error.to_string()))?;
+    let formats = inspection_formats(&raw)
+        .into_iter()
+        .filter_map(parse_format)
+        .collect::<Vec<_>>();
     let title = raw
         .title
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| MediaError::InvalidMetadata("title is missing".into()))?;
-    let formats = raw
-        .formats
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|format| {
-            let id = format.format_id.filter(|id| valid_format_id(id))?;
-            let video = format
-                .vcodec
-                .as_deref()
-                .is_some_and(|codec| codec != "none");
-            let audio = format
-                .acodec
-                .as_deref()
-                .is_some_and(|codec| codec != "none");
-            (video || audio).then_some(MediaFormat {
-                id,
-                extension: format.ext,
-                container: format.container,
-                width: format.width,
-                height: format.height,
-                frame_rate: format.fps,
-                video_codec: format.vcodec.filter(|v| v != "none"),
-                audio_codec: format.acodec.filter(|v| v != "none"),
-                audio_bitrate_kbps: format.abr,
-                estimated_bytes: format.filesize.or(format.filesize_approx),
-                has_video: video,
-                has_audio: audio,
-            })
-        })
-        .collect::<Vec<_>>();
     if formats.is_empty() {
+        if raw.has_drm == Some(true) {
+            return Err(MediaError::InvalidMetadata(
+                "the source is DRM-protected and has no downloadable formats".into(),
+            ));
+        }
         return Err(MediaError::InvalidMetadata(
-            "no downloadable formats were reported".into(),
+            "the extractor returned no recognizable audio or video streams; update yt-dlp and verify the source is publicly accessible and downloadable".into(),
         ));
     }
     let availability = if raw.has_drm == Some(true) {
@@ -920,6 +912,64 @@ fn parse_inspection(bytes: &[u8], fallback_url: &str) -> Result<MediaInspection,
     })
 }
 
+fn inspection_formats(raw: &RawInspection) -> Vec<RawFormat> {
+    let mut formats = raw.formats.clone().unwrap_or_default();
+    if formats.is_empty()
+        && let Some(format_id) = raw.format_id.clone()
+    {
+        formats.push(RawFormat {
+            format_id: Some(format_id),
+            ext: raw.ext.clone(),
+            container: None,
+            audio_ext: None,
+            video_ext: None,
+            width: raw.width,
+            height: raw.height,
+            fps: raw.fps,
+            vcodec: raw.vcodec.clone(),
+            acodec: raw.acodec.clone(),
+            abr: raw.abr,
+            asr: None,
+            audio_channels: None,
+            filesize: raw.filesize,
+            filesize_approx: None,
+        });
+    }
+    formats
+}
+
+fn parse_format(format: RawFormat) -> Option<MediaFormat> {
+    let id = format.format_id.filter(|id| valid_format_id(id))?;
+    let video_codec = format.vcodec.filter(|codec| has_media_codec(codec));
+    let audio_codec = format.acodec.filter(|codec| has_media_codec(codec));
+    let video = video_codec.is_some()
+        || format.width.is_some()
+        || format.height.is_some()
+        || format.video_ext.as_deref().is_some_and(has_media_codec);
+    let audio = audio_codec.is_some()
+        || format.audio_ext.as_deref().is_some_and(has_media_codec)
+        || (!video
+            && (format.abr.is_some() || format.asr.is_some() || format.audio_channels.is_some()));
+    (video || audio).then_some(MediaFormat {
+        id,
+        extension: format.ext,
+        container: format.container,
+        width: format.width,
+        height: format.height,
+        frame_rate: format.fps,
+        video_codec,
+        audio_codec,
+        audio_bitrate_kbps: format.abr,
+        estimated_bytes: format.filesize.or(format.filesize_approx),
+        has_video: video,
+        has_audio: audio,
+    })
+}
+
+fn has_media_codec(value: &str) -> bool {
+    !value.trim().is_empty() && !value.eq_ignore_ascii_case("none")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,6 +982,32 @@ mod tests {
         assert!(result.formats[0].has_video);
         assert!(!result.formats[0].has_audio);
         assert_eq!(result.subtitles[0].extensions, vec!["vtt"]);
+    }
+
+    #[test]
+    fn recognizes_stream_type_from_dimensions_and_extractor_extensions() {
+        let json = br#"{"title":"Modern metadata","formats":[{"format_id":"video-720","ext":"mp4","width":1280,"height":720,"video_ext":"mp4","audio_ext":"none"},{"format_id":"audio-128","ext":"m4a","audio_ext":"m4a","video_ext":"none","abr":128}]}"#;
+
+        let result = parse_inspection(json, "https://media.example/watch/1").expect("metadata");
+
+        assert_eq!(result.formats.len(), 2);
+        assert!(result.formats[0].has_video);
+        assert!(!result.formats[0].has_audio);
+        assert!(!result.formats[1].has_video);
+        assert!(result.formats[1].has_audio);
+        assert_eq!(result.formats[0].video_codec, None);
+    }
+
+    #[test]
+    fn accepts_single_format_metadata_without_a_formats_array() {
+        let json = br#"{"title":"Direct media","format_id":"source","ext":"mp4","width":1920,"height":1080,"vcodec":"NONE"}"#;
+
+        let result = parse_inspection(json, "https://media.example/video.mp4").expect("metadata");
+
+        assert_eq!(result.formats.len(), 1);
+        assert_eq!(result.formats[0].id, "source");
+        assert!(result.formats[0].has_video);
+        assert_eq!(result.formats[0].video_codec, None);
     }
 
     #[test]
@@ -962,7 +1038,15 @@ mod tests {
     #[test]
     fn rejects_drm_only_metadata_without_formats() {
         let json = br#"{"title":"Protected","has_drm":true,"formats":[]}"#;
-        assert!(parse_inspection(json, "https://example.com").is_err());
+        let error = parse_inspection(json, "https://example.com").expect_err("no media formats");
+        assert!(error.to_string().contains("DRM-protected"));
+    }
+
+    #[test]
+    fn explains_when_extractor_reports_no_media_streams() {
+        let json = br#"{"title":"Unavailable","formats":[]}"#;
+        let error = parse_inspection(json, "https://example.com").expect_err("no media formats");
+        assert!(error.to_string().contains("update yt-dlp"));
     }
 
     #[test]
