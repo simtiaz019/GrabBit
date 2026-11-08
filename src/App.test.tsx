@@ -112,6 +112,24 @@ describe('App', () => {
     act(() => requestMedia?.('https://media.example/watch/1'));
     const dialog = await screen.findByRole('dialog', { name: 'Add media download' });
     expect(within(dialog).getByPlaceholderText('https://media.example/watch/…')).toHaveValue('https://media.example/watch/1');
+    await waitFor(() => expect(inspectMedia).toHaveBeenCalledWith('https://media.example/watch/1', true));
+    expect(within(dialog).queryByText(/I own this media/)).not.toBeInTheDocument();
+    expect(await within(dialog).findByText('Licensed sample')).toBeVisible();
+  });
+
+  it('reports unsupported media inspection errors without a confirmation gate', async () => {
+    let requestMedia: ((url: string) => void) | undefined;
+    vi.mocked(onBrowserMediaRequest).mockImplementation(async (callback) => {
+      requestMedia = callback;
+      return () => undefined;
+    });
+    vi.mocked(inspectMedia).mockRejectedValueOnce(new Error('Protected or unsupported media'));
+    render(<App />);
+    await waitFor(() => expect(requestMedia).toBeDefined());
+    act(() => requestMedia?.('https://media.example/protected'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Protected or unsupported media');
+    expect(screen.queryByText(/I own this media/)).not.toBeInTheDocument();
   });
 
   it('inspects metadata and submits a download', async () => {
@@ -128,11 +146,10 @@ describe('App', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Add Media' }));
     fireEvent.change(screen.getByPlaceholderText('https://media.example/watch/…'), { target: { value: 'https://media.example/watch/1' } });
-    fireEvent.click(screen.getByText(/I own this media/));
     fireEvent.click(screen.getByRole('button', { name: 'Inspect available formats' }));
     expect(await screen.findByText('Licensed sample')).toBeVisible();
     expect(screen.getByRole('option', { name: /720p 30fps/ })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Start media download' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
     await waitFor(() => expect(createMediaDownload).toHaveBeenCalledWith(expect.objectContaining({ formatIds: ['v720', 'a128'], output: 'mp4', authorizationConfirmed: true })));
   });
 

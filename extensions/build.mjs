@@ -38,6 +38,7 @@ for (const browser of ['chromium', 'firefox']) {
   await cp(join(root, 'shared', 'popup.css'), join(dist, 'popup.css'));
   await cp(join(root, 'shared', 'confirm.html'), join(dist, 'confirm.html'));
   await cp(join(root, 'shared', 'confirm.css'), join(dist, 'confirm.css'));
+  await cp(join(root, 'shared', 'assets', 'media-download-button.png'), join(dist, 'media-download-button.png'));
   await cp(join(root, '..', 'public', 'branding', 'logo-icon.png'), join(dist, 'icon.png'));
   await cp(join(root, browser, 'manifest.json'), join(dist, 'manifest.json'));
 }

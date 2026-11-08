@@ -9,6 +9,13 @@ function setVideoSize(video: HTMLVideoElement, width = 640, height = 360): void 
   });
 }
 
+function setElementSize(element: HTMLElement, width = 640, height = 360): void {
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+    x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height,
+    toJSON: () => ({}),
+  });
+}
+
 async function loadAction(sendMessage = vi.fn().mockResolvedValue({ ok: true })): Promise<typeof sendMessage> {
   Object.defineProperty(globalThis, 'chrome', {
     configurable: true,
@@ -25,6 +32,7 @@ describe('on-page media action', () => {
     (window as Window & { [cleanupKey]?: () => void })[cleanupKey]?.();
     Reflect.deleteProperty(window, cleanupKey);
     Reflect.deleteProperty(globalThis, 'chrome');
+    history.replaceState({}, '', '/');
     document.body.replaceChildren();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -33,14 +41,31 @@ describe('on-page media action', () => {
   it('detects an HTML5 video and places the branded action on its player', async () => {
     document.body.innerHTML = '<div id="player"><video controls></video></div>';
     setVideoSize(document.querySelector('video')!);
+    setElementSize(document.querySelector('#player')!);
     await loadAction();
 
     const button = document.querySelector<HTMLButtonElement>('#grabbit-media-action');
     expect(button?.parentElement?.id).toBe('player');
     expect(button?.title).toBe('Download with GrabBit');
-    expect(button?.querySelector('img')?.src).toBe('chrome-extension://test/icon.png');
-    expect(button?.style.right).toBe('10px');
-    expect(button?.style.bottom).toBe('48px');
+    expect(button?.querySelector('img')?.src).toBe('chrome-extension://test/media-download-button.png');
+    expect(button?.textContent).toContain('GrabBit Download');
+    expect(button?.getAttribute('aria-label')).toBe('Download with GrabBit');
+    expect(button?.style.right).toBe('12px');
+    expect(button?.style.bottom).toBe('54px');
+
+    button?.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(button?.style.width).toBe('164px');
+    button?.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(button?.style.width).toBe('44px');
+  });
+
+  it('places the action on an asynchronously initialized YouTube player', async () => {
+    history.replaceState({}, '', '/watch?v=authorized-fixture');
+    document.body.innerHTML = '<ytd-app><div id="movie_player"></div></ytd-app>';
+    setElementSize(document.querySelector('#movie_player')!, 1280, 720);
+    await loadAction();
+
+    expect(document.querySelector('#movie_player > #grabbit-media-action')).not.toBeNull();
   });
 
   it('does not create duplicate actions after DOM mutations', async () => {
