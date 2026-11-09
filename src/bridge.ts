@@ -11,6 +11,7 @@ import type {
   MediaOutput,
   BrowserDiagnostics,
   BrowserSetupReport,
+  MediaToolsDiagnostics,
 } from './types';
 
 export const checkBackend = (): Promise<HealthResponse> => invoke('health_check');
@@ -43,6 +44,8 @@ export const createMediaDownload = (request: {
   output: MediaOutput;
   authorizationConfirmed: boolean;
 }): Promise<DownloadJob> => invoke('create_media_download', request);
+
+export const testMediaTools = (): Promise<MediaToolsDiagnostics> => invoke('media_capabilities');
 
 export const getBrowserDiagnostics = (): Promise<BrowserDiagnostics> =>
   invoke('get_browser_diagnostics');

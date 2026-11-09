@@ -4,8 +4,8 @@ use base64::Engine;
 use download_common::{AppSettings, DownloadJob, HealthResponse, HealthStatus, RemoteMetadata};
 use download_core::{AddDownloadRequest, AddMediaRequest, DownloadService};
 use media_engine::{
-    InspectRequest, MediaInspection, MediaInspector, MediaOutput, ToolCapabilities, ToolConfig,
-    YtDlpAdapter, fetch_secure_thumbnail,
+    InspectRequest, MediaInspection, MediaInspector, MediaOutput, YtDlpAdapter,
+    fetch_secure_thumbnail,
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -131,13 +131,11 @@ pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())
 }
 
-fn media_adapter(settings: &AppSettings) -> Result<YtDlpAdapter, String> {
-    YtDlpAdapter::new(ToolConfig::from_paths(
-        PathBuf::from(&settings.yt_dlp_path),
-        PathBuf::from(&settings.ffmpeg_path),
-        PathBuf::from(&settings.ffprobe_path),
-    ))
-    .map_err(|error| error.to_string())
+fn media_adapter(
+    service: &DownloadService,
+    settings: &AppSettings,
+) -> Result<YtDlpAdapter, String> {
+    YtDlpAdapter::new(service.resolved_media_tools(settings)).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -147,6 +145,7 @@ pub async fn inspect_media(
     authorization_confirmed: bool,
 ) -> Result<MediaInspection, String> {
     let adapter = media_adapter(
+        &service,
         &service
             .settings()
             .await
@@ -179,17 +178,19 @@ pub async fn inspect_media(
 #[tauri::command]
 pub async fn media_capabilities(
     service: State<'_, Arc<DownloadService>>,
-) -> Result<ToolCapabilities, String> {
-    let adapter = media_adapter(
-        &service
-            .settings()
-            .await
-            .map_err(|error| error.to_string())?,
-    )?;
-    adapter
+    runtime: State<'_, crate::media_tools::MediaToolRuntime>,
+) -> Result<crate::media_tools::MediaToolsDiagnostics, String> {
+    let settings = service
+        .settings()
+        .await
+        .map_err(|error| error.to_string())?;
+    let resolved = service.resolved_media_tools(&settings);
+    let adapter = media_adapter(&service, &settings)?;
+    let versions = adapter
         .capabilities()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(runtime.diagnostics(&settings, &resolved, &versions))
 }
 
 #[tauri::command]

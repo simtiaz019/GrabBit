@@ -106,6 +106,7 @@ pub struct DownloadService {
     active: Mutex<HashMap<DownloadId, CancellationToken>>,
     concurrency: Arc<Semaphore>,
     progress: broadcast::Sender<ProgressSnapshot>,
+    media_tools: ToolConfig,
 }
 
 impl std::fmt::Debug for DownloadService {
@@ -123,6 +124,22 @@ impl DownloadService {
     ///
     /// Returns an error when directories, SQLite, or the HTTP client cannot be initialized.
     pub async fn open(data_directory: &Path) -> Result<Arc<Self>, ServiceError> {
+        Self::open_with_media_tools(
+            data_directory,
+            ToolConfig::from_paths(PathBuf::new(), PathBuf::new(), PathBuf::new()),
+        )
+        .await
+    }
+
+    /// Opens the service with automatically discovered bundled/system media tools.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when directories, SQLite, or the HTTP client cannot be initialized.
+    pub async fn open_with_media_tools(
+        data_directory: &Path,
+        media_tools: ToolConfig,
+    ) -> Result<Arc<Self>, ServiceError> {
         fs::create_dir_all(data_directory).await?;
         let storage = DownloadStorage::open(&data_directory.join("grabbit.sqlite3")).await?;
         storage.reconcile_interrupted(now()?).await?;
@@ -137,7 +154,18 @@ impl DownloadService {
                 settings.max_concurrent_downloads.clamp(1, 32),
             ))),
             progress,
+            media_tools,
         }))
+    }
+
+    /// Resolves valid user overrides ahead of the automatic tool configuration.
+    #[must_use]
+    pub fn resolved_media_tools(&self, settings: &AppSettings) -> ToolConfig {
+        self.media_tools.with_overrides(
+            Path::new(&settings.yt_dlp_path),
+            Path::new(&settings.ffmpeg_path),
+            Path::new(&settings.ffprobe_path),
+        )
     }
 
     /// Inspects remote metadata without creating a job.
@@ -324,7 +352,7 @@ impl DownloadService {
         {
             return Err(ServiceError::InvalidDestination);
         }
-        let adapter = media_adapter(&settings)?;
+        let adapter = media_adapter(&settings, &self.media_tools)?;
         let inspection = adapter
             .inspect(
                 &InspectRequest {
@@ -741,7 +769,7 @@ impl DownloadService {
             eta_seconds: None,
         });
         let settings = self.storage.settings().await?;
-        let adapter = media_adapter(&settings)?;
+        let adapter = media_adapter(&settings, &self.media_tools)?;
         let processing_state = if record.output_format == "original" {
             DownloadState::Downloading
         } else if matches!(record.output_format.as_str(), "mp4" | "webm" | "mkv") {
@@ -998,11 +1026,14 @@ impl DownloadService {
     }
 }
 
-fn media_adapter(settings: &AppSettings) -> Result<YtDlpAdapter, ServiceError> {
-    Ok(YtDlpAdapter::new(ToolConfig::from_paths(
-        PathBuf::from(&settings.yt_dlp_path),
-        PathBuf::from(&settings.ffmpeg_path),
-        PathBuf::from(&settings.ffprobe_path),
+fn media_adapter(
+    settings: &AppSettings,
+    automatic_tools: &ToolConfig,
+) -> Result<YtDlpAdapter, ServiceError> {
+    Ok(YtDlpAdapter::new(automatic_tools.with_overrides(
+        Path::new(&settings.yt_dlp_path),
+        Path::new(&settings.ffmpeg_path),
+        Path::new(&settings.ffprobe_path),
     ))?)
 }
 

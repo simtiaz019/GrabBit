@@ -2,6 +2,7 @@ mod browser_integration;
 mod browser_ipc;
 mod commands;
 mod lifecycle;
+mod media_tools;
 
 use download_common::{BrowserCaptureMode, DownloadState};
 use download_core::DownloadService;
@@ -53,8 +54,13 @@ pub fn run() {
             sync_browser_extensions(&resource_directory, &extension_directory)
                 .map_err(|error| error.to_string())?;
             sync_browser_native_host(&resource_directory).map_err(|error| error.to_string())?;
-            let service = tauri::async_runtime::block_on(DownloadService::open(&data_directory))
-                .map_err(|error| error.to_string())?;
+            let media_tool_runtime = media_tools::MediaToolRuntime::discover(&resource_directory);
+            let service = tauri::async_runtime::block_on(DownloadService::open_with_media_tools(
+                &data_directory,
+                media_tool_runtime.automatic.clone(),
+            ))
+            .map_err(|error| error.to_string())?;
+            app.manage(media_tool_runtime);
             app.manage(AppDataDirectory(data_directory.clone()));
             let ipc_service = service.clone();
             let ipc_directory = data_directory.clone();
@@ -73,21 +79,6 @@ pub fn run() {
             {
                 settings.default_download_directory =
                     download_directory.to_string_lossy().into_owned();
-            }
-            if settings.yt_dlp_path.trim().is_empty()
-                && let Some(path) = discover_tool("yt-dlp")
-            {
-                settings.yt_dlp_path = path.to_string_lossy().into_owned();
-            }
-            if settings.ffmpeg_path.trim().is_empty()
-                && let Some(path) = discover_tool("ffmpeg")
-            {
-                settings.ffmpeg_path = path.to_string_lossy().into_owned();
-            }
-            if settings.ffprobe_path.trim().is_empty()
-                && let Some(path) = discover_tool("ffprobe")
-            {
-                settings.ffprobe_path = path.to_string_lossy().into_owned();
             }
             if std::env::var_os("GRABBIT_ENABLE_AUTOMATIC_CAPTURE").as_deref()
                 == Some(std::ffi::OsStr::new("1"))
@@ -277,30 +268,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     }
     tray.build(app)?;
     Ok(())
-}
-
-fn discover_tool(name: &str) -> Option<std::path::PathBuf> {
-    let executable = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    let path_candidate = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|directory| directory.join(&executable))
-            .find(|candidate| candidate.is_file())
-    });
-    if path_candidate.is_some() {
-        return path_candidate;
-    }
-    #[cfg(target_os = "macos")]
-    for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let candidate = std::path::Path::new(directory).join(&executable);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn sync_browser_extensions(resources: &Path, destination: &Path) -> std::io::Result<()> {

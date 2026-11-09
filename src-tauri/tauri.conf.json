@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run extension:build && node scripts/prepare-browser-host.mjs && npm run build",
+    "beforeBuildCommand": "npm run extension:build && node scripts/prepare-browser-host.mjs && node scripts/prepare-media-tools.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,6 +28,11 @@
     "targets": "all",
     "resources": {
       "../target/browser-native-host-resources/grabbit-browser-host*": "browser-native-host/",
+      "../target/media-tools-resources/yt-dlp*": "media-tools/",
+      "../target/media-tools-resources/ffmpeg*": "media-tools/",
+      "../target/media-tools-resources/ffprobe*": "media-tools/",
+      "../target/media-tools-resources/THIRD_PARTY_NOTICES.txt": "media-tools/THIRD_PARTY_NOTICES.txt",
+      "../target/media-tools-resources/licenses/*": "media-tools/licenses/",
       "../extensions/chromium/dist/*": "browser-extensions/chromium/",
       "../extensions/firefox/dist/*": "browser-extensions/firefox/"
     },

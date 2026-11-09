@@ -98,6 +98,20 @@ export interface MediaInspection {
 
 export type MediaOutput = 'original' | 'mp4' | 'webm' | 'mkv' | 'mp3' | 'm4a' | 'aac' | 'opus' | 'flac' | 'wav';
 
+export interface MediaToolDiagnostic {
+  name: string;
+  version: string;
+  status: 'Ready';
+  source: 'bundled' | 'system' | 'custom';
+  path: string;
+}
+
+export interface MediaToolsDiagnostics {
+  ytDlp: MediaToolDiagnostic;
+  ffmpeg: MediaToolDiagnostic;
+  ffprobe: MediaToolDiagnostic;
+}
+
 export interface BrowserDiagnostics {
   platform: string;
   ipcAvailable: boolean;

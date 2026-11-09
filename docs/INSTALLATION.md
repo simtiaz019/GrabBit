@@ -132,11 +132,14 @@ the manifests and copied host binary.
 
 ## Media tools
 
-Install yt-dlp, FFmpeg, and FFprobe from trusted sources, then enter their
-absolute executable paths in **Settings > Media tools**. GrabBit validates the
-paths and invokes them directly without a shell. It never downloads or executes
-tool updates silently. Review the tools' licenses and your media provider's
-terms before use.
+Official installers include verified, version-pinned yt-dlp, FFmpeg, and
+FFprobe executables. **Settings > Media tools** reports their versions, source,
+and readiness without manual path setup. Advanced custom paths remain optional;
+a valid custom executable overrides the bundle, while empty or invalid paths do
+not. GrabBit never downloads or updates executables at application startup.
+Bundled license texts, build identification, and source-availability notices
+ship beside the tools. Review those notices and your media provider's terms
+before use.
 
 Tool processes run in a cancellable process group where the platform supports
 it. Thumbnails are fetched only from credential-free public HTTPS destinations,

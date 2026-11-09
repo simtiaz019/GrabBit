@@ -16,9 +16,11 @@ jobs:
         include:
           - platform: macos-latest
             args: --target aarch64-apple-darwin
-          - platform: macos-latest
+          - platform: macos-15-intel
             args: --target x86_64-apple-darwin
           - platform: ubuntu-22.04
+            args: ""
+          - platform: ubuntu-22.04-arm
             args: ""
           - platform: windows-latest
             args: ""
@@ -29,6 +31,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/cache@v5
+        with:
+          path: target/media-tools-cache
+          key: media-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/media-tools.lock.json') }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1

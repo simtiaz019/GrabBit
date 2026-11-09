@@ -2,6 +2,8 @@
 
 use std::{
     collections::BTreeSet,
+    fs::File,
+    io::Read,
     net::IpAddr,
     path::{Path, PathBuf},
     process::Stdio,
@@ -125,6 +127,31 @@ impl ToolConfig {
             timeout: DEFAULT_TIMEOUT,
         }
     }
+
+    /// Resolves valid custom overrides ahead of automatic bundled/system paths.
+    #[must_use]
+    pub fn with_overrides(&self, yt_dlp: &Path, ffmpeg: &Path, ffprobe: &Path) -> Self {
+        Self {
+            yt_dlp: preferred_tool(yt_dlp, &self.yt_dlp),
+            ffmpeg: preferred_tool(ffmpeg, &self.ffmpeg),
+            ffprobe: preferred_tool(ffprobe, &self.ffprobe),
+            timeout: self.timeout,
+        }
+    }
+}
+
+fn preferred_tool(override_path: &Path, automatic_path: &Path) -> PathBuf {
+    if tool_path_is_valid(override_path) {
+        override_path.to_path_buf()
+    } else {
+        automatic_path.to_path_buf()
+    }
+}
+
+/// Returns whether a configured tool is an absolute regular executable path.
+#[must_use]
+pub fn tool_path_is_valid(path: &Path) -> bool {
+    validate_tool(path).is_ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,7 +441,7 @@ pub struct ToolCapabilities {
 }
 
 fn validate_tool(path: &Path) -> Result<(), MediaError> {
-    if !path.is_absolute() || !path.is_file() {
+    if !path.is_absolute() || !path.is_file() || !executable_matches_platform(path) {
         return Err(MediaError::ToolUnavailable(path.display().to_string()));
     }
     #[cfg(unix)]
@@ -432,6 +459,105 @@ fn validate_tool(path: &Path) -> Result<(), MediaError> {
         }
     }
     Ok(())
+}
+
+fn executable_matches_platform(path: &Path) -> bool {
+    let mut header = [0_u8; 4096];
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(length) = file.read(&mut header) else {
+        return false;
+    };
+    let bytes = &header[..length];
+    if bytes.starts_with(b"#!") {
+        return !cfg!(windows);
+    }
+    #[cfg(windows)]
+    return pe_architecture_matches(bytes);
+    #[cfg(target_os = "linux")]
+    return elf_architecture_matches(bytes);
+    #[cfg(target_os = "macos")]
+    return mach_architecture_matches(bytes);
+    #[allow(unreachable_code)]
+    false
+}
+
+#[cfg(windows)]
+fn pe_architecture_matches(bytes: &[u8]) -> bool {
+    let Some(offset) = bytes
+        .get(0x3c..0x40)
+        .map(|value| u32::from_le_bytes(value.try_into().expect("four bytes")) as usize)
+    else {
+        return false;
+    };
+    let Some(machine) = bytes
+        .get(offset + 4..offset + 6)
+        .map(|value| u16::from_le_bytes(value.try_into().expect("two bytes")))
+    else {
+        return false;
+    };
+    machine
+        == if cfg!(target_arch = "aarch64") {
+            0xaa64
+        } else {
+            0x8664
+        }
+}
+
+#[cfg(target_os = "linux")]
+fn elf_architecture_matches(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"\x7fELF") || bytes.get(5) != Some(&1) {
+        return false;
+    }
+    let Some(machine) = bytes
+        .get(18..20)
+        .map(|value| u16::from_le_bytes(value.try_into().expect("two bytes")))
+    else {
+        return false;
+    };
+    machine
+        == if cfg!(target_arch = "aarch64") {
+            183
+        } else {
+            62
+        }
+}
+
+#[cfg(target_os = "macos")]
+fn mach_architecture_matches(bytes: &[u8]) -> bool {
+    let expected = if cfg!(target_arch = "aarch64") {
+        0x0100_000c
+    } else {
+        0x0100_0007
+    };
+    let Some(magic) = bytes
+        .get(..4)
+        .map(|value| u32::from_be_bytes(value.try_into().expect("four bytes")))
+    else {
+        return false;
+    };
+    if magic == 0xcafe_babe {
+        let Some(count) = bytes
+            .get(4..8)
+            .map(|value| u32::from_be_bytes(value.try_into().expect("four bytes")) as usize)
+        else {
+            return false;
+        };
+        return (0..count).any(|index| {
+            bytes
+                .get(8 + index * 20..12 + index * 20)
+                .is_some_and(|value| {
+                    u32::from_be_bytes(value.try_into().expect("four bytes")) == expected
+                })
+        });
+    }
+    if magic == 0xcffa_edfe {
+        return bytes.get(4..8).is_some_and(|value| {
+            u32::from_le_bytes(value.try_into().expect("four bytes")) == expected
+        });
+    }
+    false
 }
 
 fn validate_output_path(path: &Path) -> Result<(), MediaError> {
@@ -1085,5 +1211,21 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn empty_or_invalid_overrides_do_not_mask_automatic_tools() {
+        let executable = std::env::current_exe().expect("current executable");
+        assert!(tool_path_is_valid(&executable));
+        let automatic =
+            ToolConfig::from_paths(executable.clone(), executable.clone(), executable.clone());
+        let resolved = automatic.with_overrides(
+            Path::new(""),
+            Path::new("/definitely/missing/ffmpeg"),
+            Path::new(""),
+        );
+        assert_eq!(resolved.yt_dlp, executable);
+        assert_eq!(resolved.ffmpeg, executable);
+        assert_eq!(resolved.ffprobe, executable);
     }
 }

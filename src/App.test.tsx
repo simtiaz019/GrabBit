@@ -1,14 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getBrowserSetup, getLaunchAtLogin, getOnboardingComplete, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, onTrayNavigate, pauseDownload, probeUrl, removeDownload, repairBrowserIntegration, resumeDownload, retryDownload, saveSettings, setLaunchAtLogin, setOnboardingComplete } from './bridge';
+import { addDownload, cancelDownload, checkBackend, createMediaDownload, getBrowserDiagnostics, getBrowserSetup, getLaunchAtLogin, getOnboardingComplete, getSettings, inspectMedia, listDownloads, onBrowserMediaRequest, onProgress, onTrayNavigate, pauseDownload, probeUrl, removeDownload, repairBrowserIntegration, resumeDownload, retryDownload, saveSettings, setLaunchAtLogin, setOnboardingComplete, testMediaTools } from './bridge';
 import type { ProgressSnapshot } from './types';
 
 vi.mock('./bridge', () => ({
   addDownload: vi.fn(), cancelDownload: vi.fn(), checkBackend: vi.fn(),
   chooseDownloadDirectory: vi.fn(), createMediaDownload: vi.fn(), getBrowserDiagnostics: vi.fn(), getBrowserSetup: vi.fn(), getLaunchAtLogin: vi.fn(), getOnboardingComplete: vi.fn(), getSettings: vi.fn(), inspectMedia: vi.fn(), listDownloads: vi.fn(),
   onBrowserMediaRequest: vi.fn(), onProgress: vi.fn(), onTrayNavigate: vi.fn(), pauseDownload: vi.fn(), probeUrl: vi.fn(), removeDownload: vi.fn(),
-  removeBrowserIntegration: vi.fn(), repairBrowserIntegration: vi.fn(), resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(), setLaunchAtLogin: vi.fn(), setOnboardingComplete: vi.fn(),
+  removeBrowserIntegration: vi.fn(), repairBrowserIntegration: vi.fn(), resumeDownload: vi.fn(), retryDownload: vi.fn(), saveSettings: vi.fn(), setLaunchAtLogin: vi.fn(), setOnboardingComplete: vi.fn(), testMediaTools: vi.fn(),
 }));
 
 const job = {
@@ -35,6 +35,11 @@ describe('App', () => {
     vi.mocked(getLaunchAtLogin).mockResolvedValue(false);
     vi.mocked(setLaunchAtLogin).mockResolvedValue();
     vi.mocked(setOnboardingComplete).mockResolvedValue();
+    vi.mocked(testMediaTools).mockResolvedValue({
+      ytDlp: { name: 'yt-dlp', version: '2026.08.19', status: 'Ready', source: 'bundled', path: '/bundle/yt-dlp' },
+      ffmpeg: { name: 'FFmpeg', version: 'ffmpeg version 6.1.1', status: 'Ready', source: 'bundled', path: '/bundle/ffmpeg' },
+      ffprobe: { name: 'FFprobe', version: 'ffprobe version 6.1.1', status: 'Ready', source: 'bundled', path: '/bundle/ffprobe' },
+    });
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
     vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
     vi.mocked(onTrayNavigate).mockResolvedValue(vi.fn());
@@ -64,6 +69,15 @@ describe('App', () => {
     fireEvent.change(captureMode, { target: { value: 'automatic' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ browserCaptureMode: 'automatic' })));
+  });
+
+  it('shows bundled media tools as ready without custom paths', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByTitle('Settings'));
+    expect(await screen.findByText('2026.08.19')).toBeVisible();
+    expect(screen.getAllByText('Ready · Bundled')).toHaveLength(3);
+    expect(screen.getByRole('button', { name: 'Test Media Tools' })).toBeVisible();
+    expect(testMediaTools).toHaveBeenCalled();
   });
 
   it('shows a skippable first-run browser setup without claiming extension installation', async () => {
