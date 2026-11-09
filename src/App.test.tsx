@@ -39,6 +39,7 @@ describe('App', () => {
       ytDlp: { name: 'yt-dlp', version: '2026.08.19', status: 'Ready', source: 'bundled', path: '/bundle/yt-dlp' },
       ffmpeg: { name: 'FFmpeg', version: 'ffmpeg version 6.1.1', status: 'Ready', source: 'bundled', path: '/bundle/ffmpeg' },
       ffprobe: { name: 'FFprobe', version: 'ffprobe version 6.1.1', status: 'Ready', source: 'bundled', path: '/bundle/ffprobe' },
+      deno: { name: 'Deno', version: 'deno 2.9.8', status: 'Ready', source: 'bundled', path: '/bundle/deno' },
     });
     vi.mocked(onProgress).mockResolvedValue(vi.fn());
     vi.mocked(onBrowserMediaRequest).mockResolvedValue(vi.fn());
@@ -75,7 +76,7 @@ describe('App', () => {
     render(<App />);
     fireEvent.click(screen.getByTitle('Settings'));
     expect(await screen.findByText('2026.08.19')).toBeVisible();
-    expect(screen.getAllByText('Ready · Bundled')).toHaveLength(3);
+    expect(screen.getAllByText('Ready · Bundled')).toHaveLength(4);
     expect(screen.getByRole('button', { name: 'Test Media Tools' })).toBeVisible();
     expect(testMediaTools).toHaveBeenCalled();
   });

@@ -31,6 +31,7 @@
       "../target/media-tools-resources/yt-dlp*": "media-tools/",
       "../target/media-tools-resources/ffmpeg*": "media-tools/",
       "../target/media-tools-resources/ffprobe*": "media-tools/",
+      "../target/media-tools-resources/deno*": "media-tools/",
       "../target/media-tools-resources/THIRD_PARTY_NOTICES.txt": "media-tools/THIRD_PARTY_NOTICES.txt",
       "../target/media-tools-resources/licenses/*": "media-tools/licenses/",
       "../extensions/chromium/dist/*": "browser-extensions/chromium/",

@@ -92,6 +92,22 @@ if (selected.ffmpegBuild === 'macos-source') {
   );
 }
 
+const denoBase = `https://github.com/denoland/deno/releases/download/v${lock.denoVersion}`;
+const denoArchive = await fetchVerified(`${denoBase}/${selected.denoAsset}`, selected.denoSha256);
+const denoCached = join(cache, `${selected.denoSha256}-deno${executableSuffix}`);
+try {
+  await stat(denoCached);
+} catch {
+  const extractDirectory = join(cache, `${selected.denoSha256}-extract`);
+  await rm(extractDirectory, { recursive: true, force: true });
+  await mkdir(extractDirectory, { recursive: true });
+  execFileSync('tar', ['-xf', denoArchive, '-C', extractDirectory], { stdio: 'inherit' });
+  await copyFile(join(extractDirectory, `deno${executableSuffix}`), denoCached);
+  if (selected.platform !== 'win32') await chmod(denoCached, 0o755);
+  await rm(extractDirectory, { recursive: true, force: true });
+}
+artifacts.push({ name: `deno${executableSuffix}`, source: denoCached, kind: 'deno' });
+
 function binaryArchitectures(bytes) {
   if (bytes[0] === 0x4d && bytes[1] === 0x5a) {
     const pe = bytes.readUInt32LE(0x3c);
@@ -125,6 +141,7 @@ for (const artifact of artifacts) {
 const noticeArtifacts = [
   { name: 'yt-dlp-LICENSE.txt', url: `https://raw.githubusercontent.com/yt-dlp/yt-dlp/${lock.ytDlpVersion}/LICENSE`, sha: lock.notices.ytDlpLicenseSha256 },
   { name: 'yt-dlp-THIRD_PARTY_LICENSES.txt', url: `https://raw.githubusercontent.com/yt-dlp/yt-dlp/${lock.ytDlpVersion}/THIRD_PARTY_LICENSES.txt`, sha: lock.notices.ytDlpThirdPartySha256 },
+  { name: 'Deno-LICENSE.md', url: `https://raw.githubusercontent.com/denoland/deno/v${lock.denoVersion}/LICENSE.md`, sha: lock.notices.denoLicenseSha256 },
 ];
 if (!macosBuild) noticeArtifacts.push(
   { name: 'FFmpeg-LICENSE.txt', url: `${ffBase}/${selected.ffmpegPlatform}.LICENSE`, sha: selected.licenseSha256 },
@@ -144,7 +161,7 @@ if (macosBuild) {
 const ffmpegProvenance = macosBuild
   ? `Built from verified source with Opus ${lock.macosSourceBuild.opusVersion} and LAME ${lock.macosSourceBuild.lameVersion}.\nBuild identification and GPL/LGPL/BSD license texts are included under licenses/.`
   : `Binary distributor and build/source metadata: https://github.com/eugeneware/ffmpeg-static/tree/b${lock.ffmpegVersion}\nThe distributor README and applicable GPL license are included under licenses/.`;
-await writeFile(join(stage, 'THIRD_PARTY_NOTICES.txt'), `GrabBit bundled media tools\n\nyt-dlp ${lock.ytDlpVersion}\nSource: https://github.com/yt-dlp/yt-dlp/tree/${lock.ytDlpVersion}\nRelease binaries and bundled dependencies are covered by the included yt-dlp license files.\n\nFFmpeg ${lock.ffmpegVersion}\nSource: https://github.com/FFmpeg/FFmpeg/tree/n${lock.ffmpegVersion}\n${ffmpegProvenance}\n`);
+await writeFile(join(stage, 'THIRD_PARTY_NOTICES.txt'), `GrabBit bundled media tools\n\nyt-dlp ${lock.ytDlpVersion}\nSource: https://github.com/yt-dlp/yt-dlp/tree/${lock.ytDlpVersion}\nRelease binaries and bundled dependencies are covered by the included yt-dlp license files.\n\nDeno ${lock.denoVersion}\nSource: https://github.com/denoland/deno/tree/v${lock.denoVersion}\nDeno is MIT-licensed; its license is included under licenses/.\n\nFFmpeg ${lock.ffmpegVersion}\nSource: https://github.com/FFmpeg/FFmpeg/tree/n${lock.ffmpegVersion}\n${ffmpegProvenance}\n`);
 
 const hostPlatform = process.platform;
 const hostArch = process.arch;
@@ -155,5 +172,7 @@ if (hostPlatform === selected.platform && hostArch === selected.arch) {
     if (!encoders.includes(encoder)) throw new Error(`Bundled FFmpeg lacks required ${encoder} encoder.`);
   }
   execFileSync(artifacts[2].output, ['-version'], { stdio: 'pipe', timeout: 30000 });
+  const deno = artifacts.find((artifact) => artifact.kind === 'deno');
+  execFileSync(deno.output, ['--version'], { stdio: 'pipe', timeout: 30000 });
 }
-globalThis.console.log(`Prepared verified media tools ${lock.ytDlpVersion}/${lock.ffmpegVersion} for ${target}.`);
+globalThis.console.log(`Prepared verified media tools yt-dlp ${lock.ytDlpVersion}, FFmpeg ${lock.ffmpegVersion}, Deno ${lock.denoVersion} for ${target}.`);

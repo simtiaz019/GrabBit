@@ -1,6 +1,7 @@
 {
   "ytDlpVersion": "2026.08.19",
   "ffmpegVersion": "6.1.1",
+  "denoVersion": "2.9.8",
   "macosSourceBuild": {
     "ffmpegUrl": "https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz",
     "ffmpegSha256": "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968",
@@ -12,14 +13,15 @@
     "lameSha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
   },
   "targets": {
-    "x86_64-pc-windows-msvc": { "platform": "win32", "arch": "x64", "ytDlpAsset": "yt-dlp.exe", "ytDlpSha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a", "ffmpegPlatform": "win32-x64", "ffmpegSha256": "04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00", "ffprobeSha256": "3a7e2dc003dc2cd1472827e4c7c4f056ae1ae0ae7c5bbc580c99b49827351ba4", "licenseSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903", "readmeSha256": "a636a7183c58006351acbaf35303c0ed85c6e1320fd4e80de453ba6157de6311" },
-    "aarch64-apple-darwin": { "platform": "darwin", "arch": "arm64", "ytDlpAsset": "yt-dlp_macos", "ytDlpSha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202", "ffmpegBuild": "macos-source" },
-    "x86_64-apple-darwin": { "platform": "darwin", "arch": "x64", "ytDlpAsset": "yt-dlp_macos", "ytDlpSha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202", "ffmpegBuild": "macos-source" },
-    "x86_64-unknown-linux-gnu": { "platform": "linux", "arch": "x64", "ytDlpAsset": "yt-dlp_linux", "ytDlpSha256": "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a", "ffmpegPlatform": "linux-x64", "ffmpegSha256": "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99", "ffprobeSha256": "4f231a1960d83e403d08f7971e271707bec278a9ae18e21b8b5b03186668450d", "licenseSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903", "readmeSha256": "72f4b1b06d419d22ace6e7cc75f06826f90737345aa0b1736158929f4aacc537" },
-    "aarch64-unknown-linux-gnu": { "platform": "linux", "arch": "arm64", "ytDlpAsset": "yt-dlp_linux_aarch64", "ytDlpSha256": "b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc", "ffmpegPlatform": "linux-arm64", "ffmpegSha256": "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce", "ffprobeSha256": "d17ae9b4c297d48e2521ba14e417bb0537c6ff77c584cdbcd6bb0d8d0307a2e8", "licenseSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903", "readmeSha256": "d6777d2fd276b23f0ac6666fa619e88ffe4826521881c7ff83836e30cb4acec2" }
+    "x86_64-pc-windows-msvc": { "platform": "win32", "arch": "x64", "ytDlpAsset": "yt-dlp.exe", "ytDlpSha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a", "denoAsset": "deno-x86_64-pc-windows-msvc.zip", "denoSha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf", "ffmpegPlatform": "win32-x64", "ffmpegSha256": "04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00", "ffprobeSha256": "3a7e2dc003dc2cd1472827e4c7c4f056ae1ae0ae7c5bbc580c99b49827351ba4", "licenseSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903", "readmeSha256": "a636a7183c58006351acbaf35303c0ed85c6e1320fd4e80de453ba6157de6311" },
+    "aarch64-apple-darwin": { "platform": "darwin", "arch": "arm64", "ytDlpAsset": "yt-dlp_macos", "ytDlpSha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202", "denoAsset": "deno-aarch64-apple-darwin.zip", "denoSha256": "9f0bf660393da2eaff044cdc7444cb08c73f235849b61d224d825a194ce7c98e", "ffmpegBuild": "macos-source" },
+    "x86_64-apple-darwin": { "platform": "darwin", "arch": "x64", "ytDlpAsset": "yt-dlp_macos", "ytDlpSha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202", "denoAsset": "deno-x86_64-apple-darwin.zip", "denoSha256": "4b2f5edd2639b7470f034238b321d7002d8dfb4726d8558f52c17afac370eb2c", "ffmpegBuild": "macos-source" },
+    "x86_64-unknown-linux-gnu": { "platform": "linux", "arch": "x64", "ytDlpAsset": "yt-dlp_linux", "ytDlpSha256": "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a", "denoAsset": "deno-x86_64-unknown-linux-gnu.zip", "denoSha256": "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609", "ffmpegPlatform": "linux-x64", "ffmpegSha256": "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99", "ffprobeSha256": "4f231a1960d83e403d08f7971e271707bec278a9ae18e21b8b5b03186668450d", "licenseSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903", "readmeSha256": "72f4b1b06d419d22ace6e7cc75f06826f90737345aa0b1736158929f4aacc537" },
+    "aarch64-unknown-linux-gnu": { "platform": "linux", "arch": "arm64", "ytDlpAsset": "yt-dlp_linux_aarch64", "ytDlpSha256": "b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc", "denoAsset": "deno-aarch64-unknown-linux-gnu.zip", "denoSha256": "d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905", "ffmpegPlatform": "linux-arm64", "ffmpegSha256": "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce", "ffprobeSha256": "d17ae9b4c297d48e2521ba14e417bb0537c6ff77c584cdbcd6bb0d8d0307a2e8", "licenseSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903", "readmeSha256": "d6777d2fd276b23f0ac6666fa619e88ffe4826521881c7ff83836e30cb4acec2" }
   },
   "notices": {
     "ytDlpLicenseSha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
-    "ytDlpThirdPartySha256": "472aefe951c7db35e1657c1d13fd337140511ed6f2b329205105ad441c5a02b7"
+    "ytDlpThirdPartySha256": "472aefe951c7db35e1657c1d13fd337140511ed6f2b329205105ad441c5a02b7",
+    "denoLicenseSha256": "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588"
   }
 }

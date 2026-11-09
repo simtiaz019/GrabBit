@@ -8,6 +8,8 @@ stored in Git or downloaded when GrabBit starts.
 
 - yt-dlp 2026.08.19: official standalone release binaries. yt-dlp code is
   Unlicense; its binary dependency notices are copied from the matching tag.
+- Deno 2.9.8: official target-specific release binaries, used only as the
+  explicitly configured yt-dlp JavaScript runtime. Deno is MIT-licensed.
 - FFmpeg 6.1.1 on macOS: built on the native release runner from verified
   FFmpeg 6.1.1, LAME 3.100, and Opus 1.5.2 sources. The build enables GPL,
   libmp3lame, and libopus, disables dependency autodetection, and links only

@@ -21,7 +21,8 @@ output is bounded and parsed from machine-readable JSON. The adapter accepts
 only HTTP/HTTPS sources and refuses loopback, link-local, and private literal IP
 addresses.
 
-Official installers bundle version-pinned media executables as Tauri resources.
+Official installers bundle version-pinned media executables and a Deno
+JavaScript runtime for yt-dlp's YouTube challenge solver as Tauri resources.
 A reproducible preparation script selects artifacts by target triple, fetches
 them from pinned upstream releases, verifies immutable SHA-256 values and binary
 architecture, runs native version and encoder smoke checks, and stages license,

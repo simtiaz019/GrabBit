@@ -114,6 +114,7 @@ pub struct ToolConfig {
     pub yt_dlp: PathBuf,
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
+    pub js_runtime: Option<PathBuf>,
     pub timeout: Duration,
 }
 
@@ -124,8 +125,16 @@ impl ToolConfig {
             yt_dlp,
             ffmpeg,
             ffprobe,
+            js_runtime: None,
             timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Adds the verified JavaScript runtime used for `YouTube` challenge solving.
+    #[must_use]
+    pub fn with_js_runtime(mut self, path: PathBuf) -> Self {
+        self.js_runtime = Some(path);
+        self
     }
 
     /// Resolves valid custom overrides ahead of automatic bundled/system paths.
@@ -135,6 +144,7 @@ impl ToolConfig {
             yt_dlp: preferred_tool(yt_dlp, &self.yt_dlp),
             ffmpeg: preferred_tool(ffmpeg, &self.ffmpeg),
             ffprobe: preferred_tool(ffprobe, &self.ffprobe),
+            js_runtime: self.js_runtime.clone(),
             timeout: self.timeout,
         }
     }
@@ -315,6 +325,9 @@ impl YtDlpAdapter {
         for path in [&tools.yt_dlp, &tools.ffmpeg, &tools.ffprobe] {
             validate_tool(path)?;
         }
+        if let Some(path) = &tools.js_runtime {
+            validate_tool(path)?;
+        }
         Ok(Self { tools })
     }
 
@@ -345,10 +358,24 @@ impl YtDlpAdapter {
             cancellation,
         )
         .await?;
+        let deno = if let Some(path) = &self.tools.js_runtime {
+            Some(first_line(
+                &run_tool(
+                    path,
+                    &["--version"],
+                    self.tools.timeout,
+                    CancellationToken::new(),
+                )
+                .await?,
+            ))
+        } else {
+            None
+        };
         Ok(ToolCapabilities {
             yt_dlp: first_line(&yt_dlp),
             ffmpeg: first_line(&ffmpeg),
             ffprobe: first_line(&ffprobe),
+            deno,
         })
     }
 
@@ -372,6 +399,7 @@ impl YtDlpAdapter {
         let output = yt_output_template(&request.output_path)?;
         let ffmpeg = self.tools.ffmpeg.to_string_lossy().into_owned();
         let mut owned = vec![
+            "--ignore-config".to_owned(),
             "--no-playlist".to_owned(),
             "--no-part".to_owned(),
             "--no-warnings".to_owned(),
@@ -390,6 +418,7 @@ impl YtDlpAdapter {
             "--output".to_owned(),
             output,
         ];
+        append_js_runtime(&mut owned, self.tools.js_runtime.as_deref());
         append_output_args(&mut owned, &request.output);
         owned.push("--".to_owned());
         owned.push(request.url.clone());
@@ -414,20 +443,18 @@ impl MediaInspector for YtDlpAdapter {
         cancellation: CancellationToken,
     ) -> Result<MediaInspection, MediaError> {
         ensure_authorized_url(&request.url, request.authorization_confirmed)?;
-        let output = run_tool(
-            &self.tools.yt_dlp,
-            &[
-                "--dump-single-json",
-                "--skip-download",
-                "--no-playlist",
-                "--no-warnings",
-                "--",
-                &request.url,
-            ],
-            self.tools.timeout,
-            cancellation,
-        )
-        .await?;
+        let mut owned = vec![
+            "--ignore-config".to_owned(),
+            "--dump-single-json".to_owned(),
+            "--skip-download".to_owned(),
+            "--no-playlist".to_owned(),
+            "--no-warnings".to_owned(),
+        ];
+        append_js_runtime(&mut owned, self.tools.js_runtime.as_deref());
+        owned.push("--".to_owned());
+        owned.push(request.url.clone());
+        let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = run_tool(&self.tools.yt_dlp, &args, self.tools.timeout, cancellation).await?;
         parse_inspection(&output, &request.url)
     }
 }
@@ -438,6 +465,14 @@ pub struct ToolCapabilities {
     pub yt_dlp: String,
     pub ffmpeg: String,
     pub ffprobe: String,
+    pub deno: Option<String>,
+}
+
+fn append_js_runtime(args: &mut Vec<String>, runtime: Option<&Path>) {
+    if let Some(runtime) = runtime {
+        args.push("--js-runtimes".to_owned());
+        args.push(format!("deno:{}", runtime.to_string_lossy()));
+    }
 }
 
 fn validate_tool(path: &Path) -> Result<(), MediaError> {
@@ -771,8 +806,7 @@ async fn run_download_tool(
     if status.success() {
         Ok(())
     } else {
-        drop(stderr);
-        Err(tool_exit_error(status))
+        Err(tool_exit_error(status, &stderr))
     }
 }
 
@@ -835,8 +869,7 @@ async fn run_tool(
         .await
         .map_err(|error| MediaError::InvalidMetadata(error.to_string()))??;
     if !status.success() {
-        drop(stderr);
-        return Err(tool_exit_error(status));
+        return Err(tool_exit_error(status, &stderr));
     }
     Ok(stdout)
 }
@@ -851,6 +884,18 @@ fn restricted_command(path: &Path, args: &[&str]) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    for name in ["SYSTEMROOT", "TEMP", "TMP", "LOCALAPPDATA"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    #[cfg(unix)]
+    for name in ["TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -859,13 +904,72 @@ fn restricted_command(path: &Path, args: &[&str]) -> Command {
     command
 }
 
-fn tool_exit_error(status: std::process::ExitStatus) -> MediaError {
+fn tool_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> MediaError {
+    let detail = safe_tool_failure(stderr)
+        .unwrap_or("details withheld because the tool did not return a recognized safe diagnostic");
     MediaError::ToolFailed(format!(
-        "process exited with status {} (details withheld to protect source credentials)",
+        "process exited with status {}: {detail}",
         status
             .code()
             .map_or_else(|| "signal".into(), |code| code.to_string())
     ))
+}
+
+fn safe_tool_failure(stderr: &[u8]) -> Option<&'static str> {
+    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    [
+        (
+            ["failed to load python dll", "python3", "_mei"].as_slice(),
+            "yt-dlp could not initialize its embedded runtime; verify the temporary directory is writable and check antivirus quarantine",
+        ),
+        (
+            ["no supported javascript runtime", "javascript runtime"].as_slice(),
+            "the bundled JavaScript runtime was unavailable, so YouTube challenges could not be solved",
+        ),
+        (
+            ["requested format is not available"].as_slice(),
+            "the selected format is no longer available; inspect the media again",
+        ),
+        (
+            ["unsupported url"].as_slice(),
+            "the media provider or URL is not supported",
+        ),
+        (
+            ["http error 403", "status code 403"].as_slice(),
+            "the media provider denied the request (HTTP 403)",
+        ),
+        (
+            ["http error 429", "status code 429"].as_slice(),
+            "the media provider rate-limited the request (HTTP 429)",
+        ),
+        (
+            ["http error 404", "status code 404"].as_slice(),
+            "the requested media was not found (HTTP 404)",
+        ),
+        (
+            ["sign in to confirm", "login required"].as_slice(),
+            "the media provider requires authentication; GrabBit does not forward browser credentials",
+        ),
+        (
+            ["drm", "protected content"].as_slice(),
+            "the media appears to be DRM-protected or access-controlled",
+        ),
+        (
+            ["no space left on device"].as_slice(),
+            "the destination or temporary drive has insufficient free space",
+        ),
+        (
+            ["access is denied", "permission denied"].as_slice(),
+            "the operating system denied access to a required file or directory",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(needles, message)| {
+        needles
+            .iter()
+            .any(|needle| stderr.contains(needle))
+            .then_some(message)
+    })
 }
 
 async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
@@ -1227,5 +1331,20 @@ mod tests {
         assert_eq!(resolved.yt_dlp, executable);
         assert_eq!(resolved.ffmpeg, executable);
         assert_eq!(resolved.ffprobe, executable);
+    }
+
+    #[test]
+    fn tool_failures_are_categorized_without_echoing_source_details() {
+        assert_eq!(
+            safe_tool_failure(b"ERROR: HTTP Error 403 for https://example.test/?token=secret"),
+            Some("the media provider denied the request (HTTP 403)")
+        );
+        assert_eq!(
+            safe_tool_failure(b"Failed to load Python DLL C:\\Temp\\_MEI123\\python.dll"),
+            Some(
+                "yt-dlp could not initialize its embedded runtime; verify the temporary directory is writable and check antivirus quarantine"
+            )
+        );
+        assert_eq!(safe_tool_failure(b"unknown failure https://secret"), None);
     }
 }

@@ -200,7 +200,7 @@ function MediaToolsSettings({ settings, onChange }: { settings: AppSettings; onC
   useEffect(test, [test]);
   return <>
     <div className="media-tool-statuses">
-      {diagnostics && [diagnostics.ytDlp, diagnostics.ffmpeg, diagnostics.ffprobe].map((tool) => <div key={tool.name}><strong>{tool.name}</strong><span>{tool.status} · {capitalize(tool.source)}</span><code>{tool.version}</code></div>)}
+      {diagnostics && [diagnostics.ytDlp, diagnostics.ffmpeg, diagnostics.ffprobe, diagnostics.deno].filter((tool) => tool !== null).map((tool) => <div key={tool.name}><strong>{tool.name}</strong><span>{tool.status} · {capitalize(tool.source)}</span><code>{tool.version}</code></div>)}
       {!diagnostics && !diagnosticError && <p>Testing bundled media tools…</p>}
     </div>
     <button className="secondary compact" disabled={testing} onClick={test} type="button">{testing ? 'Testing…' : 'Test Media Tools'}</button>

@@ -110,6 +110,7 @@ export interface MediaToolsDiagnostics {
   ytDlp: MediaToolDiagnostic;
   ffmpeg: MediaToolDiagnostic;
   ffprobe: MediaToolDiagnostic;
+  deno: MediaToolDiagnostic | null;
 }
 
 export interface BrowserDiagnostics {

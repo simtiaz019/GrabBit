@@ -306,8 +306,9 @@ async fn adapter_reports_progress_and_cancels_child_process() {
     let script = format!(
         r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then echo test-yt-dlp; exit 0; fi
-out=""; last=""
-for ((i=1;i<=$#;i++)); do arg="${{!i}}"; if [[ "$last" == "--output" ]]; then out="$arg"; fi; last="$arg"; done
+out=""; last=""; js_runtime=""
+for ((i=1;i<=$#;i++)); do arg="${{!i}}"; if [[ "$last" == "--output" ]]; then out="$arg"; fi; if [[ "$last" == "--js-runtimes" ]]; then js_runtime="$arg"; fi; last="$arg"; done
+if [[ "$js_runtime" != deno:* ]]; then echo 'missing bundled JavaScript runtime' >&2; exit 7; fi
 url="${{!#}}"
 if [[ "$url" == *slow* ]]; then /bin/sleep 10; fi
 out="${{out//%(ext)s/mp4}}"
@@ -334,8 +335,10 @@ echo 'grabbit-progress|postprocess|NA|NA|NA|NA|NA'
     fs::set_permissions(&helper, permissions)
         .await
         .expect("permissions");
-    let adapter =
-        YtDlpAdapter::new(ToolConfig::from_paths(yt_dlp, helper.clone(), helper)).expect("adapter");
+    let adapter = YtDlpAdapter::new(
+        ToolConfig::from_paths(yt_dlp, helper.clone(), helper.clone()).with_js_runtime(helper),
+    )
+    .expect("adapter");
     let output = temp.path().join("result.mp4");
     let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
     adapter

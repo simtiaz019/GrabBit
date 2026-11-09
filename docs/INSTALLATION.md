@@ -132,9 +132,10 @@ the manifests and copied host binary.
 
 ## Media tools
 
-Official installers include verified, version-pinned yt-dlp, FFmpeg, and
-FFprobe executables. **Settings > Media tools** reports their versions, source,
-and readiness without manual path setup. Advanced custom paths remain optional;
+Official installers include verified, version-pinned yt-dlp, FFmpeg, FFprobe,
+and the Deno runtime required for current YouTube challenge solving.
+**Settings > Media tools** reports their versions, source, and readiness without
+manual path setup. Advanced custom paths remain optional;
 a valid custom executable overrides the bundle, while empty or invalid paths do
 not. GrabBit never downloads or updates executables at application startup.
 Bundled license texts, build identification, and source-availability notices

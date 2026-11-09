@@ -26,6 +26,7 @@ pub struct MediaToolsDiagnostics {
     pub yt_dlp: MediaToolDiagnostic,
     pub ffmpeg: MediaToolDiagnostic,
     pub ffprobe: MediaToolDiagnostic,
+    pub deno: Option<MediaToolDiagnostic>,
 }
 
 impl MediaToolRuntime {
@@ -33,7 +34,7 @@ impl MediaToolRuntime {
     pub fn discover(resources: &Path) -> Self {
         let bundled_directory = resources.join("media-tools");
         let suffix = if cfg!(windows) { ".exe" } else { "" };
-        let automatic = ToolConfig::from_paths(
+        let mut automatic = ToolConfig::from_paths(
             automatic_path(&bundled_directory.join(format!("yt-dlp{suffix}")), "yt-dlp"),
             automatic_path(&bundled_directory.join(format!("ffmpeg{suffix}")), "ffmpeg"),
             automatic_path(
@@ -41,6 +42,10 @@ impl MediaToolRuntime {
                 "ffprobe",
             ),
         );
+        let deno = automatic_path(&bundled_directory.join(format!("deno{suffix}")), "deno");
+        if tool_path_is_valid(&deno) {
+            automatic = automatic.with_js_runtime(deno);
+        }
         Self {
             automatic,
             bundled_directory,
@@ -73,6 +78,11 @@ impl MediaToolRuntime {
                 &resolved.ffprobe,
                 &versions.ffprobe,
             ),
+            deno: resolved
+                .js_runtime
+                .as_ref()
+                .zip(versions.deno.as_ref())
+                .map(|(path, version)| self.diagnostic("Deno", "", path, version)),
         }
     }
 
