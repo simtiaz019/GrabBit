@@ -8,6 +8,7 @@
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["media-action.js"], "run_at": "document_idle" }],
+  "web_accessible_resources": [{ "resources": ["media-download-button.png"], "matches": ["http://*/*", "https://*/*"] }],
   "action": { "default_popup": "popup.html", "default_title": "GrabBit" },
   "icons": { "16": "icon.png", "48": "icon.png", "128": "icon.png" }
 }

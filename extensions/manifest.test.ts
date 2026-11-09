@@ -8,8 +8,13 @@ describe.each(['chromium', 'firefox'])('%s extension manifest', (browser) => {
     const manifest = JSON.parse(await readFile(join(process.cwd(), 'extensions', browser, 'manifest.json'), 'utf8')) as {
       host_permissions?: string[];
       content_scripts?: Array<{ matches: string[]; js: string[] }>;
+      web_accessible_resources?: Array<{ resources: string[]; matches: string[] }>;
     };
     expect(manifest.host_permissions).toEqual(expect.arrayContaining(['http://*/*', 'https://*/*']));
     expect(manifest.content_scripts).toContainEqual(expect.objectContaining({ js: ['media-action.js'] }));
+    expect(manifest.web_accessible_resources).toContainEqual({
+      resources: ['media-download-button.png'],
+      matches: ['http://*/*', 'https://*/*'],
+    });
   });
 });
